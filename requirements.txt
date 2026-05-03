@@ -1,0 +1,6 @@
+httpx
+selectolax
+pandas
+pyarrow
+huggingface_hub
+python-dotenv
