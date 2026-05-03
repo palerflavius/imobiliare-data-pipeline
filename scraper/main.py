@@ -104,36 +104,72 @@ def html_to_lines(html_text: str) -> list[str]:
     lines = [clean_text(line) for line in text.splitlines()]
     return [line for line in lines if line]
 
+def is_listing_title(line: str) -> bool:
+    line = clean_text(line) or ""
+
+    if len(line) < 20:
+        return False
+
+    bad_keywords = [
+        "apartamente de vânzare",
+        "anunțuri disponibile",
+        "resetează filtrele",
+        "aplică filtrele",
+        "salvează căutarea",
+        "activează notificările",
+        "dezactivează notificările",
+        "trimite mesaj",
+        "loading",
+        "sortare",
+        "top listing",
+        "cele mai recente",
+    ]
+
+    if any(word in line.lower() for word in bad_keywords):
+        return False
+
+    good_keywords = [
+        "apartament",
+        "penthouse",
+        "garsonier",
+        "studio",
+        "camere",
+        "rezidence",
+        "residence",
+        "bloc",
+        "zona",
+    ]
+
+    return any(word in line.lower() for word in good_keywords)
 
 def parse_listings(html_text: str, page_url: str) -> list[dict]:
     lines = html_to_lines(html_text)
     listings = []
 
     for i, line in enumerate(lines):
-        # Pe pagina publică, titlurile anunțurilor apar ca headings.
-        if not line.startswith("###"):
+        title = clean_text(line)
+
+        if not title:
             continue
 
-        title = clean_text(line.replace("###", ""))
-        if not title or len(title) < 15:
+        if not is_listing_title(title):
             continue
 
-        # Evităm titlurile duplicate/scurtate care apar uneori după primul titlu.
-        if title.endswith("...") or "Caută" in title:
-            continue
-
-        block_lines = lines[i : i + 18]
+        # Luăm următoarele linii din jurul titlului.
+        # În pagina publică, prețul, locația, camerele și mp apar imediat după titlu.
+        block_lines = lines[i : i + 16]
         block_text = "\n".join(block_lines)
 
         price_eur = extract_price_eur(block_text)
+
+        # Dacă nu are preț în blocul apropiat, probabil nu e card real.
+        if price_eur is None:
+            continue
+
         rooms = extract_rooms(block_text)
         area_sqm = extract_area_sqm(block_text)
         floor = extract_floor(block_text)
         location = extract_location(block_lines)
-
-        # Dacă nu avem preț, probabil nu e card valid.
-        if price_eur is None:
-            continue
 
         listings.append(
             {
@@ -149,19 +185,17 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
             }
         )
 
-    # deduplicare după titlu + preț + suprafață
     unique = {}
     for item in listings:
         key = (
             item.get("title"),
             item.get("price_eur"),
-            item.get("area_sqm"),
             item.get("location"),
+            item.get("area_sqm"),
         )
         unique[key] = item
 
     return list(unique.values())
-
 
 def upload_to_hugging_face(file_path: Path) -> None:
     hf_token = os.environ["HF_TOKEN"]
@@ -189,6 +223,13 @@ def main() -> None:
         for url in START_URLS:
             print(f"Scraping: {url}")
             html_text = fetch(client, url)
+
+            print("HTML length:", len(html_text))
+
+            debug_lines = html_to_lines(html_text)
+            print("First 80 text lines:")
+            for line in debug_lines[:80]:
+                print(line)
 
             listings = parse_listings(html_text, url)
             print(f"Found listings on page: {len(listings)}")
