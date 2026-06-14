@@ -23,8 +23,14 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          SITE_NAME: "imobiliare.ro"
+          CITY_SLUG: "brasov"
+          OFFER_TYPE: "sale"
+          PROPERTY_TYPE: "apartments"
+          START_URL: "https://www.imobiliare.ro/vanzare-apartamente/judetul-brasov/brasov"
           BATCH_SIZE: "300"
-          DETAIL_WORKERS: "4"
+          PAGE_WORKERS: "8"
+          DETAIL_WORKERS: "6"
           DETAIL_REQUEST_DELAY_SECONDS: "0.2"
-          REQUEST_DELAY_SECONDS: "1"
+          REQUEST_DELAY_SECONDS: "0.5"
         run: python -m scraper.main

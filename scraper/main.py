@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,14 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 
 BASE_URL = "https://www.imobiliare.ro"
-START_URL = "https://www.imobiliare.ro/vanzare-apartamente/judetul-brasov/brasov"
+SITE_NAME = os.getenv("SITE_NAME", "imobiliare.ro")
+CITY_SLUG = os.getenv("CITY_SLUG", "brasov")
+OFFER_TYPE = os.getenv("OFFER_TYPE", "sale")
+PROPERTY_TYPE = os.getenv("PROPERTY_TYPE", "apartments")
+START_URL = os.getenv(
+    "START_URL",
+    "https://www.imobiliare.ro/vanzare-apartamente/judetul-brasov/brasov",
+)
 
 REQUEST_DELAY_SECONDS = float(os.getenv("REQUEST_DELAY_SECONDS", "2"))
 DETAIL_REQUEST_DELAY_SECONDS = float(os.getenv("DETAIL_REQUEST_DELAY_SECONDS", "0.2"))
@@ -21,6 +29,27 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", "0")) or None
 MAX_DETAIL_PAGES = int(os.getenv("MAX_DETAIL_PAGES", "0")) or None
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "300"))
 DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "4"))
+PAGE_WORKERS = int(os.getenv("PAGE_WORKERS", "4"))
+
+
+def partition_path() -> str:
+    parts = {
+        "site": SITE_NAME,
+        "city": CITY_SLUG,
+        "offer": OFFER_TYPE,
+        "property": PROPERTY_TYPE,
+    }
+    return "/".join(f"{key}={safe_path_part(value)}" for key, value in parts.items())
+
+
+def safe_path_part(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9_.-]+", "-", value)
+    return value.strip("-") or "unknown"
+
+
+PARTITION_PATH = os.getenv("PARTITION_PATH", partition_path())
+HF_INDEX_PATH = os.getenv("HF_INDEX_PATH", f"raw/{PARTITION_PATH}/index/listing_price_index.parquet")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; imobiliare-data-pipeline/1.0; educational project)"
@@ -194,6 +223,13 @@ def listing_id_from_url(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def listing_event_key(listing: dict) -> str:
+    listing_id = listing.get("listing_id") or listing.get("listing_url")
+    price_eur = listing.get("price_eur")
+    price_key = "" if price_eur is None else f"{float(price_eur):.2f}"
+    return f"{listing_id}|{price_key}"
+
+
 def find_card_container(anchor):
     node = anchor
     for _ in range(8):
@@ -278,6 +314,10 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
         listings.append(
             {
                 "source": "imobiliare.ro",
+                "site": SITE_NAME,
+                "city": CITY_SLUG,
+                "offer_type": OFFER_TYPE,
+                "property_type": PROPERTY_TYPE,
                 "title": title,
                 "price_eur": price_eur,
                 "location": extract_location(block_lines),
@@ -353,20 +393,63 @@ def resolve_detail_urls(df):
     return df
 
 
-def upload_to_hugging_face(file_path: Path, batch_number: int) -> None:
-    from huggingface_hub import HfApi
-
+def hf_config() -> tuple[str | None, str | None]:
     hf_token = os.getenv("HF_TOKEN")
     hf_repo_id = os.getenv("HF_REPO_ID")
+    return hf_token, hf_repo_id
 
+
+def load_existing_index(output_dir: Path):
+    import pandas as pd
+    from huggingface_hub import hf_hub_download
+
+    hf_token, hf_repo_id = hf_config()
     if not hf_token or not hf_repo_id:
-        print("Skipping Hugging Face upload: HF_TOKEN or HF_REPO_ID is not set.")
+        print("Skipping Hugging Face index load: HF_TOKEN or HF_REPO_ID is not set.")
+        return pd.DataFrame()
+
+    try:
+        index_file = hf_hub_download(
+            repo_id=hf_repo_id,
+            repo_type="dataset",
+            filename=HF_INDEX_PATH,
+            token=hf_token,
+            local_dir=output_dir / "hf-cache",
+        )
+    except Exception as error:
+        print(f"No existing Hugging Face index loaded ({type(error).__name__}: {error}).")
+        return pd.DataFrame()
+
+    df = pd.read_parquet(index_file)
+    print(f"Loaded Hugging Face index rows: {len(df)}")
+    return df
+
+
+def index_lookup(index_df) -> tuple[set[str], dict[str, float]]:
+    if index_df.empty:
+        return set(), {}
+
+    event_keys = set(index_df["event_key"].dropna().astype(str))
+    latest_prices = {}
+
+    for row in index_df.sort_values("last_seen_at").itertuples(index=False):
+        listing_id = getattr(row, "listing_id", None)
+        price_eur = getattr(row, "price_eur", None)
+        if listing_id is not None and price_eur is not None:
+            latest_prices[str(listing_id)] = float(price_eur)
+
+    return event_keys, latest_prices
+
+
+def upload_file_to_hugging_face(file_path: Path, path_in_repo: str) -> None:
+    from huggingface_hub import HfApi
+
+    hf_token, hf_repo_id = hf_config()
+    if not hf_token or not hf_repo_id:
+        print(f"Skipping Hugging Face upload for {path_in_repo}: HF_TOKEN or HF_REPO_ID is not set.")
         return
 
     api = HfApi(token=hf_token)
-
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path_in_repo = f"raw/imobiliare/listings_{date_str}_batch_{batch_number:04d}.parquet"
 
     api.upload_file(
         path_or_fileobj=str(file_path),
@@ -378,11 +461,55 @@ def upload_to_hugging_face(file_path: Path, batch_number: int) -> None:
     print(f"Uploaded to Hugging Face: {path_in_repo}")
 
 
-def save_and_upload_batch(listings: list[dict], output_dir: Path, batch_number: int) -> None:
+def upload_batch_to_hugging_face(file_path: Path, batch_number: int) -> None:
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path_in_repo = f"raw/{PARTITION_PATH}/date={date_str}/listings_batch_{batch_number:04d}.parquet"
+    upload_file_to_hugging_face(file_path, path_in_repo)
+
+
+def update_index(index_df, batch_df):
+    import pandas as pd
+
+    now = datetime.now(timezone.utc).isoformat()
+    index_rows = []
+
+    for row in batch_df.itertuples(index=False):
+        index_rows.append(
+            {
+                "event_key": row.event_key,
+                "listing_id": str(row.listing_id),
+                "price_eur": float(row.price_eur),
+                "listing_url": row.listing_url,
+                "final_listing_url": row.final_listing_url,
+                "title": row.title,
+                "location": row.location,
+                "first_seen_at": row.scraped_at,
+                "last_seen_at": now,
+            }
+        )
+
+    new_index_df = pd.DataFrame(index_rows)
+    if index_df.empty:
+        return new_index_df.drop_duplicates(subset=["event_key"], keep="last")
+
+    combined = pd.concat([index_df, new_index_df], ignore_index=True)
+    return combined.drop_duplicates(subset=["event_key"], keep="last")
+
+
+def upload_index(index_df, output_dir: Path) -> None:
+    if index_df.empty:
+        return
+
+    index_file = output_dir / "listing_price_index.parquet"
+    index_df.to_parquet(index_file, index=False)
+    upload_file_to_hugging_face(index_file, HF_INDEX_PATH)
+
+
+def save_and_upload_batch(listings: list[dict], output_dir: Path, batch_number: int, index_df):
     import pandas as pd
 
     if not listings:
-        return
+        return index_df
 
     df = pd.DataFrame(listings).drop_duplicates(subset=["listing_url"])
     df = resolve_detail_urls(df)
@@ -394,14 +521,48 @@ def save_and_upload_batch(listings: list[dict], output_dir: Path, batch_number: 
     print(df.head(10).to_string())
     print(f"Rows in batch {batch_number}: {len(df)}")
 
-    upload_to_hugging_face(output_file, batch_number)
+    upload_batch_to_hugging_face(output_file, batch_number)
+
+    index_df = update_index(index_df, df)
+    upload_index(index_df, output_dir)
+    return index_df
+
+
+def scrape_page(page_number: int, last_page: int, first_html: str | None = None) -> list[dict]:
+    url = page_url(START_URL, page_number)
+    print(f"Scraping page {page_number}/{last_page}: {url}")
+
+    if first_html is not None:
+        html_text = first_html
+    else:
+        with httpx.Client(follow_redirects=True) as client:
+            html_text = fetch(client, url)
+
+    listings = parse_listings(html_text, url)
+    print(f"Found listings on page {page_number}: {len(listings)}")
+    return listings
+
+
+def batched(items: Iterable[dict], size: int) -> Iterable[list[dict]]:
+    batch = []
+    for item in items:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+
+    if batch:
+        yield batch
 
 
 def main() -> None:
-    output_dir = Path("/tmp/imobiliare-output")
+    output_dir = Path("/tmp/imobiliare-output") / PARTITION_PATH
     output_dir.mkdir(parents=True, exist_ok=True)
-    batch_listings = []
-    seen_listing_urls = set()
+    index_df = load_existing_index(output_dir)
+    existing_event_keys, latest_prices = index_lookup(index_df)
+    new_or_changed_listings = []
+    seen_event_keys = set(existing_event_keys)
+    seen_listing_urls_this_run = set()
     batch_number = 1
 
     with httpx.Client(follow_redirects=True) as client:
@@ -413,33 +574,50 @@ def main() -> None:
 
         print(f"Pages to scrape: {last_page}")
 
-        for page_number in range(1, last_page + 1):
-            url = page_url(START_URL, page_number)
-            print(f"Scraping page {page_number}/{last_page}: {url}")
-            html_text = first_html if page_number == 1 else fetch(client, url)
+        all_page_listings = scrape_page(1, last_page, first_html=first_html)
 
-            listings = parse_listings(html_text, url)
-            print(f"Found listings on page {page_number}: {len(listings)}")
+    page_numbers = list(range(2, last_page + 1))
+    if page_numbers:
+        print(f"Scraping remaining pages with {PAGE_WORKERS} workers")
+        with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as executor:
+            futures = [executor.submit(scrape_page, page_number, last_page) for page_number in page_numbers]
 
-            for listing in listings:
-                listing_url = listing["listing_url"]
-                if listing_url in seen_listing_urls:
-                    continue
-                seen_listing_urls.add(listing_url)
-                batch_listings.append(listing)
+            for future in as_completed(futures):
+                all_page_listings.extend(future.result())
+                if REQUEST_DELAY_SECONDS > 0:
+                    time.sleep(REQUEST_DELAY_SECONDS)
 
-            if len(batch_listings) >= BATCH_SIZE:
-                save_and_upload_batch(batch_listings, output_dir, batch_number)
-                batch_listings = []
-                batch_number += 1
+    for listing in all_page_listings:
+        listing_url = listing["listing_url"]
+        if listing_url in seen_listing_urls_this_run:
+            continue
+        seen_listing_urls_this_run.add(listing_url)
 
-            time.sleep(REQUEST_DELAY_SECONDS)
+        event_key = listing_event_key(listing)
+        listing_id = str(listing.get("listing_id") or listing_url)
+        previous_price = latest_prices.get(listing_id)
+        current_price = float(listing["price_eur"])
 
-    if not seen_listing_urls:
+        if event_key in seen_event_keys:
+            continue
+
+        listing["event_key"] = event_key
+        listing["previous_price_eur"] = previous_price
+        listing["price_changed"] = previous_price is not None and previous_price != current_price
+        new_or_changed_listings.append(listing)
+        seen_event_keys.add(event_key)
+
+    if not seen_listing_urls_this_run:
         raise RuntimeError("No listings found. Page structure may have changed.")
 
-    save_and_upload_batch(batch_listings, output_dir, batch_number)
-    print(f"Rows scraped: {len(seen_listing_urls)}")
+    print(f"Unique listings scraped this run: {len(seen_listing_urls_this_run)}")
+    print(f"New or price-changed listings to upload: {len(new_or_changed_listings)}")
+
+    for batch_listings in batched(new_or_changed_listings, BATCH_SIZE):
+        index_df = save_and_upload_batch(batch_listings, output_dir, batch_number, index_df)
+        batch_number += 1
+
+    print(f"Rows scraped: {len(seen_listing_urls_this_run)}")
 
 
 if __name__ == "__main__":
