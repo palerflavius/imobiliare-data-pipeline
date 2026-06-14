@@ -1,6 +1,7 @@
 from scraper.core import config
 from scraper.core.config import safe_path_part
 from scraper.sites.imobiliare import details, parser
+from scraper.sites.imobiliare.metadata import backfill_dataframe, backfill_listing_metadata
 
 
 BASE_URL = "https://www.imobiliare.ro"
@@ -37,10 +38,10 @@ class ImobiliareSiteAdapter:
         return parser.extract_last_page(html_text)
 
     def parse_listings(self, html_text: str, page_url: str) -> list[dict]:
-        return parser.parse_listings(html_text, page_url)
+        return [backfill_listing_metadata(listing) for listing in parser.parse_listings(html_text, page_url)]
 
     def listing_event_key(self, listing: dict) -> str:
         return parser.listing_event_key(listing)
 
     def resolve_detail_urls(self, df):
-        return details.resolve_detail_urls(df)
+        return backfill_dataframe(details.resolve_detail_urls(df))
