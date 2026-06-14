@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import os
+import re
+import time
 
 from scraper.core.config import HF_INDEX_PATH, PARTITION_PATH
 
@@ -104,8 +107,27 @@ def add_index_operation(index_df, operations: list) -> None:
     )
 
 
+def retry_delay_seconds(error: Exception) -> int:
+    response = getattr(error, "response", None)
+    if response is not None:
+        retry_after = response.headers.get("retry-after")
+        if retry_after and retry_after.isdigit():
+            return int(retry_after)
+
+    message = str(error)
+    match = re.search(r"Retry after (\d+) seconds", message)
+    if match:
+        return int(match.group(1))
+
+    if "repository commits" in message or "128 per hour" in message:
+        return int(os.getenv("HF_COMMIT_RETRY_FALLBACK_SECONDS", "3600"))
+
+    return 300
+
+
 def upload_operations_to_hugging_face(operations: list) -> None:
     from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
 
     hf_token, hf_repo_id = hf_config()
 
@@ -118,11 +140,24 @@ def upload_operations_to_hugging_face(operations: list) -> None:
         return
 
     api = HfApi(token=hf_token)
-    api.create_commit(
-        repo_id=hf_repo_id,
-        repo_type="dataset",
-        operations=operations,
-        commit_message=f"Upload scraper batch for {PARTITION_PATH}",
-    )
+    max_retries = int(os.getenv("HF_COMMIT_RETRIES", "3"))
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            api.create_commit(
+                repo_id=hf_repo_id,
+                repo_type="dataset",
+                operations=operations,
+                commit_message=f"Upload scraper batch for {PARTITION_PATH}",
+            )
+            break
+        except HfHubHTTPError as error:
+            status_code = getattr(getattr(error, "response", None), "status_code", None)
+            if status_code != 429 or attempt == max_retries:
+                raise
+
+            delay = retry_delay_seconds(error)
+            print(f"Hugging Face rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}.")
+            time.sleep(delay)
 
     print(f"Uploaded {len(operations)} files to Hugging Face in one commit.")
