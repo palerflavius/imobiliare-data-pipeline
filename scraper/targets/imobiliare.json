@@ -1,0 +1,41 @@
+{
+  "defaults": {
+    "site_name": "imobiliare.ro",
+    "offer_type": "sale",
+    "property_type": "apartments"
+  },
+  "counties": [
+    {
+      "county_slug": "brasov",
+      "municipality_slug": "brasov",
+      "mode": "municipality",
+      "localities": []
+    },
+    {
+      "county_slug": "cluj",
+      "municipality_slug": "cluj-napoca",
+      "mode": "municipality",
+      "localities": []
+    },
+    {
+      "county_slug": "ilfov",
+      "municipality_slug": null,
+      "mode": "all",
+      "localities": []
+    },
+    {
+      "county_slug": "bucuresti",
+      "municipality_slug": "bucuresti",
+      "mode": "areas",
+      "areas": [
+        "sector-1",
+        "sector-2",
+        "sector-3",
+        "sector-4",
+        "sector-5",
+        "sector-6"
+      ],
+      "localities": []
+    }
+  ]
+}

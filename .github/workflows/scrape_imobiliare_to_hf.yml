@@ -1,0 +1,61 @@
+name: Scrape imobiliare.ro to Hugging Face
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  build-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - id: targets
+        name: Build target matrix
+        run: |
+          matrix="$(python scraper/build_matrix.py scraper/targets/imobiliare.json)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  scrape:
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper and upload to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          SITE_NAME: ${{ matrix.target.site_name }}
+          COUNTY_SLUG: ${{ matrix.target.county_slug }}
+          CITY_SLUG: ${{ matrix.target.city_slug }}
+          AREA_SLUG: ${{ matrix.target.area_slug }}
+          OFFER_TYPE: ${{ matrix.target.offer_type }}
+          PROPERTY_TYPE: ${{ matrix.target.property_type }}
+          START_URL: ${{ matrix.target.start_url }}
+          BATCH_SIZE: "300"
+          PAGE_WORKERS: "6"
+          DETAIL_WORKERS: "4"
+          DETAIL_REQUEST_DELAY_SECONDS: "0.2"
+          REQUEST_DELAY_SECONDS: "0.5"
+        run: python -m scraper.main
