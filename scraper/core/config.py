@@ -1,7 +1,5 @@
 import os
 import re
-import tempfile
-from pathlib import Path
 
 
 SITE_NAME = os.getenv("SITE_NAME", "imobiliare.ro")
@@ -18,7 +16,6 @@ MAX_DETAIL_PAGES = int(os.getenv("MAX_DETAIL_PAGES", "0")) or None
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "300"))
 DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "4"))
 PAGE_WORKERS = int(os.getenv("PAGE_WORKERS", "4"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(Path(tempfile.gettempdir()) / "imobiliare-output")))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; imobiliare-data-pipeline/1.0; educational project)"

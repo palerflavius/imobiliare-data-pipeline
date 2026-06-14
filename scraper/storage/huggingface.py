@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from pathlib import Path
 
 from scraper.core.config import HF_INDEX_PATH, PARTITION_PATH
 
@@ -12,9 +11,9 @@ def hf_config() -> tuple[str | None, str | None]:
     return hf_token, hf_repo_id
 
 
-def load_existing_index(output_dir: Path):
+def load_existing_index():
     import pandas as pd
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import HfFileSystem
 
     hf_token, hf_repo_id = hf_config()
     if not hf_token or not hf_repo_id:
@@ -22,18 +21,13 @@ def load_existing_index(output_dir: Path):
         return pd.DataFrame()
 
     try:
-        index_file = hf_hub_download(
-            repo_id=hf_repo_id,
-            repo_type="dataset",
-            filename=HF_INDEX_PATH,
-            token=hf_token,
-            local_dir=output_dir / "hf-cache",
-        )
+        fs = HfFileSystem(token=hf_token)
+        with fs.open(f"datasets/{hf_repo_id}/{HF_INDEX_PATH}", "rb") as index_file:
+            df = pd.read_parquet(index_file)
     except Exception as error:
         print(f"No existing Hugging Face index loaded ({type(error).__name__}: {error}).")
         return pd.DataFrame()
 
-    df = pd.read_parquet(index_file)
     print(f"Loaded Hugging Face index rows: {len(df)}")
     return df
 
@@ -54,30 +48,17 @@ def index_lookup(index_df) -> tuple[set[str], dict[str, float]]:
     return event_keys, latest_prices
 
 
-def upload_file_to_hugging_face(file_path: Path, path_in_repo: str) -> None:
-    from huggingface_hub import HfApi
+def parquet_bytes(df) -> bytes:
+    from io import BytesIO
 
-    hf_token, hf_repo_id = hf_config()
-    if not hf_token or not hf_repo_id:
-        print(f"Skipping Hugging Face upload for {path_in_repo}: HF_TOKEN or HF_REPO_ID is not set.")
-        return
-
-    api = HfApi(token=hf_token)
-
-    api.upload_file(
-        path_or_fileobj=str(file_path),
-        path_in_repo=path_in_repo,
-        repo_id=hf_repo_id,
-        repo_type="dataset",
-    )
-
-    print(f"Uploaded to Hugging Face: {path_in_repo}")
+    buffer = BytesIO()
+    df.to_parquet(buffer, index=False)
+    return buffer.getvalue()
 
 
-def upload_batch_to_hugging_face(file_path: Path, batch_number: int) -> None:
+def batch_path_in_repo(batch_number: int) -> str:
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path_in_repo = f"raw/{PARTITION_PATH}/date={date_str}/listings_batch_{batch_number:04d}.parquet"
-    upload_file_to_hugging_face(file_path, path_in_repo)
+    return f"raw/{PARTITION_PATH}/date={date_str}/listings_batch_{batch_number:04d}.parquet"
 
 
 def update_index(index_df, batch_df):
@@ -109,10 +90,39 @@ def update_index(index_df, batch_df):
     return combined.drop_duplicates(subset=["event_key"], keep="last")
 
 
-def upload_index(index_df, output_dir: Path) -> None:
+def add_index_operation(index_df, operations: list) -> None:
     if index_df.empty:
         return
 
-    index_file = output_dir / "listing_price_index.parquet"
-    index_df.to_parquet(index_file, index=False)
-    upload_file_to_hugging_face(index_file, HF_INDEX_PATH)
+    from huggingface_hub import CommitOperationAdd
+
+    operations.append(
+        CommitOperationAdd(
+            path_in_repo=HF_INDEX_PATH,
+            path_or_fileobj=parquet_bytes(index_df),
+        )
+    )
+
+
+def upload_operations_to_hugging_face(operations: list) -> None:
+    from huggingface_hub import HfApi
+
+    hf_token, hf_repo_id = hf_config()
+
+    if not hf_token or not hf_repo_id:
+        print(f"Skipping Hugging Face upload for raw/{PARTITION_PATH}: HF_TOKEN or HF_REPO_ID is not set.")
+        return
+
+    if not operations:
+        print("Skipping Hugging Face upload: no files to commit.")
+        return
+
+    api = HfApi(token=hf_token)
+    api.create_commit(
+        repo_id=hf_repo_id,
+        repo_type="dataset",
+        operations=operations,
+        commit_message=f"Upload scraper batch for {PARTITION_PATH}",
+    )
+
+    print(f"Uploaded {len(operations)} files to Hugging Face in one commit.")

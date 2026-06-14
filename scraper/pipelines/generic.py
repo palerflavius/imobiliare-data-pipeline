@@ -1,30 +1,32 @@
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 import httpx
 
-from scraper.core.config import BATCH_SIZE, MAX_PAGES, OUTPUT_DIR, PAGE_WORKERS, PARTITION_PATH, REQUEST_DELAY_SECONDS
+from scraper.core.config import BATCH_SIZE, MAX_PAGES, PAGE_WORKERS, REQUEST_DELAY_SECONDS
 from scraper.core.http_client import fetch
 from scraper.core.site import SiteAdapter
 from scraper.storage.huggingface import (
+    add_index_operation,
+    batch_path_in_repo,
     index_lookup,
     load_existing_index,
+    parquet_bytes,
     update_index,
-    upload_batch_to_hugging_face,
-    upload_index,
+    upload_operations_to_hugging_face,
 )
 
 
-def save_and_upload_batch(
+def save_batch(
     site: SiteAdapter,
     listings: list[dict],
-    output_dir: Path,
     batch_number: int,
     index_df,
+    upload_operations: list,
 ):
     import pandas as pd
+    from huggingface_hub import CommitOperationAdd
 
     if not listings:
         return index_df
@@ -32,17 +34,18 @@ def save_and_upload_batch(
     df = pd.DataFrame(listings).drop_duplicates(subset=["listing_url"])
     df = site.resolve_detail_urls(df)
 
-    output_file = output_dir / f"listings_batch_{batch_number:04d}.parquet"
-    df.to_parquet(output_file, index=False)
-
     print("Preview:")
     print(df.head(10).to_string())
     print(f"Rows in batch {batch_number}: {len(df)}")
 
-    upload_batch_to_hugging_face(output_file, batch_number)
+    upload_operations.append(
+        CommitOperationAdd(
+            path_in_repo=batch_path_in_repo(batch_number),
+            path_or_fileobj=parquet_bytes(df),
+        )
+    )
 
     index_df = update_index(index_df, df)
-    upload_index(index_df, output_dir)
     return index_df
 
 
@@ -74,13 +77,12 @@ def batched(items: Iterable[dict], size: int) -> Iterable[list[dict]]:
 
 
 def run_site_pipeline(site: SiteAdapter) -> None:
-    output_dir = OUTPUT_DIR / PARTITION_PATH
-    output_dir.mkdir(parents=True, exist_ok=True)
-    index_df = load_existing_index(output_dir)
+    index_df = load_existing_index()
     existing_event_keys, latest_prices = index_lookup(index_df)
     new_or_changed_listings = []
     seen_event_keys = set(existing_event_keys)
     seen_listing_urls_this_run = set()
+    upload_operations = []
     batch_number = 1
 
     with httpx.Client(follow_redirects=True) as client:
@@ -131,7 +133,13 @@ def run_site_pipeline(site: SiteAdapter) -> None:
     print(f"New or price-changed listings to upload: {len(new_or_changed_listings)}")
 
     for batch_listings in batched(new_or_changed_listings, BATCH_SIZE):
-        index_df = save_and_upload_batch(site, batch_listings, output_dir, batch_number, index_df)
+        index_df = save_batch(site, batch_listings, batch_number, index_df, upload_operations)
         batch_number += 1
+
+    if batch_number > 1:
+        add_index_operation(index_df, upload_operations)
+        upload_operations_to_hugging_face(upload_operations)
+    else:
+        print("No new or price-changed listings to upload.")
 
     print(f"Rows scraped: {len(seen_listing_urls_this_run)}")
