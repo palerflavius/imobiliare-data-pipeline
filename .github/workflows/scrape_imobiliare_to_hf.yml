@@ -11,9 +11,9 @@ jobs:
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -33,9 +33,9 @@ jobs:
       matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -53,7 +53,7 @@ jobs:
           OFFER_TYPE: ${{ matrix.target.offer_type }}
           PROPERTY_TYPE: ${{ matrix.target.property_type }}
           START_URL: ${{ matrix.target.start_url }}
-          BATCH_SIZE: "5000"
+          BATCH_SIZE: "2000"
           PAGE_WORKERS: "6"
           DETAIL_WORKERS: "4"
           DETAIL_REQUEST_DELAY_SECONDS: "0.2"
