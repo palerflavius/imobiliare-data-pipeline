@@ -23,4 +23,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          BATCH_SIZE: "300"
+          DETAIL_WORKERS: "4"
+          DETAIL_REQUEST_DELAY_SECONDS: "0.2"
+          REQUEST_DELAY_SECONDS: "1"
         run: python -m scraper.main

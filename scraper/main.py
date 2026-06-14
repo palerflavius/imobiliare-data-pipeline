@@ -2,22 +2,25 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 from selectolax.parser import HTMLParser
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 
 BASE_URL = "https://www.imobiliare.ro"
 START_URL = "https://www.imobiliare.ro/vanzare-apartamente/judetul-brasov/brasov"
 
 REQUEST_DELAY_SECONDS = float(os.getenv("REQUEST_DELAY_SECONDS", "2"))
-DETAIL_REQUEST_DELAY_SECONDS = float(os.getenv("DETAIL_REQUEST_DELAY_SECONDS", "1"))
+DETAIL_REQUEST_DELAY_SECONDS = float(os.getenv("DETAIL_REQUEST_DELAY_SECONDS", "0.2"))
 MAX_PAGES = int(os.getenv("MAX_PAGES", "0")) or None
 MAX_DETAIL_PAGES = int(os.getenv("MAX_DETAIL_PAGES", "0")) or None
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "300"))
+DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "4"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; imobiliare-data-pipeline/1.0; educational project)"
@@ -27,7 +30,20 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=10))
+def is_retryable_fetch_error(error: BaseException) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        return status_code == 429 or status_code >= 500
+
+    return isinstance(error, (httpx.TimeoutException, httpx.TransportError))
+
+
+@retry(
+    retry=retry_if_exception(is_retryable_fetch_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=10),
+    reraise=True,
+)
 def fetch_response(client: httpx.Client, url: str) -> httpx.Response:
     response = client.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
@@ -271,6 +287,7 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
                 "page_url": page_url,
                 "listing_url": listing_url,
                 "final_listing_url": None,
+                "detail_error": None,
                 "listing_id": listing_id_from_url(listing_url),
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -283,20 +300,60 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
     return list(unique.values())
 
 
-def resolve_listing_url(client: httpx.Client, listing_url: str) -> str:
-    response = fetch_response(client, listing_url)
-    tree = HTMLParser(response.text)
-    canonical = tree.css_first('link[rel="canonical"]')
+def resolve_listing_url(client: httpx.Client, listing_url: str) -> tuple[str, str | None]:
+    try:
+        response = fetch_response(client, listing_url)
+        tree = HTMLParser(response.text)
+        canonical = tree.css_first('link[rel="canonical"]')
 
-    if canonical:
-        href = canonical.attributes.get("href")
-        if href:
-            return urljoin(listing_url, href)
+        if canonical:
+            href = canonical.attributes.get("href")
+            if href:
+                return urljoin(listing_url, href), None
 
-    return str(response.url)
+        return str(response.url), None
+    except httpx.HTTPStatusError as error:
+        status_code = error.response.status_code
+        message = f"HTTP {status_code}: {error.response.reason_phrase}"
+        print(f"Warning: detail URL failed ({message}): {listing_url}")
+        return listing_url, message
+    except httpx.HTTPError as error:
+        message = f"{type(error).__name__}: {error}"
+        print(f"Warning: detail URL failed ({message}): {listing_url}")
+        return listing_url, message
 
 
-def upload_to_hugging_face(file_path: Path) -> None:
+def resolve_listing_detail(index_and_url: tuple[int, str]) -> tuple[int, str, str | None]:
+    index, listing_url = index_and_url
+
+    if DETAIL_REQUEST_DELAY_SECONDS > 0:
+        time.sleep(DETAIL_REQUEST_DELAY_SECONDS)
+
+    with httpx.Client(follow_redirects=True) as client:
+        final_url, detail_error = resolve_listing_url(client, listing_url)
+
+    return index, final_url, detail_error
+
+
+def resolve_detail_urls(df):
+    detail_limit = len(df) if MAX_DETAIL_PAGES is None else min(len(df), MAX_DETAIL_PAGES)
+    print(f"Resolving detail URLs: {detail_limit}/{len(df)} with {DETAIL_WORKERS} workers")
+
+    tasks = [(index, df.at[index, "listing_url"]) for index in df.index[:detail_limit]]
+
+    with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
+        futures = [executor.submit(resolve_listing_detail, task) for task in tasks]
+
+        for position, future in enumerate(as_completed(futures), start=1):
+            index, final_url, detail_error = future.result()
+            df.at[index, "final_listing_url"] = final_url
+            df.at[index, "detail_error"] = detail_error
+            print(f"Resolved detail URL {position}/{detail_limit}: {final_url}")
+
+    return df
+
+
+def upload_to_hugging_face(file_path: Path, batch_number: int) -> None:
     from huggingface_hub import HfApi
 
     hf_token = os.getenv("HF_TOKEN")
@@ -309,7 +366,7 @@ def upload_to_hugging_face(file_path: Path) -> None:
     api = HfApi(token=hf_token)
 
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path_in_repo = f"raw/imobiliare/listings_{date_str}.parquet"
+    path_in_repo = f"raw/imobiliare/listings_{date_str}_batch_{batch_number:04d}.parquet"
 
     api.upload_file(
         path_or_fileobj=str(file_path),
@@ -321,10 +378,31 @@ def upload_to_hugging_face(file_path: Path) -> None:
     print(f"Uploaded to Hugging Face: {path_in_repo}")
 
 
-def main() -> None:
+def save_and_upload_batch(listings: list[dict], output_dir: Path, batch_number: int) -> None:
     import pandas as pd
 
-    all_listings = []
+    if not listings:
+        return
+
+    df = pd.DataFrame(listings).drop_duplicates(subset=["listing_url"])
+    df = resolve_detail_urls(df)
+
+    output_file = output_dir / f"listings_batch_{batch_number:04d}.parquet"
+    df.to_parquet(output_file, index=False)
+
+    print("Preview:")
+    print(df.head(10).to_string())
+    print(f"Rows in batch {batch_number}: {len(df)}")
+
+    upload_to_hugging_face(output_file, batch_number)
+
+
+def main() -> None:
+    output_dir = Path("/tmp/imobiliare-output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    batch_listings = []
+    seen_listing_urls = set()
+    batch_number = 1
 
     with httpx.Client(follow_redirects=True) as client:
         print(f"Scraping start page: {START_URL}")
@@ -343,35 +421,25 @@ def main() -> None:
             listings = parse_listings(html_text, url)
             print(f"Found listings on page {page_number}: {len(listings)}")
 
-            all_listings.extend(listings)
+            for listing in listings:
+                listing_url = listing["listing_url"]
+                if listing_url in seen_listing_urls:
+                    continue
+                seen_listing_urls.add(listing_url)
+                batch_listings.append(listing)
+
+            if len(batch_listings) >= BATCH_SIZE:
+                save_and_upload_batch(batch_listings, output_dir, batch_number)
+                batch_listings = []
+                batch_number += 1
+
             time.sleep(REQUEST_DELAY_SECONDS)
 
-    if not all_listings:
+    if not seen_listing_urls:
         raise RuntimeError("No listings found. Page structure may have changed.")
 
-    df = pd.DataFrame(all_listings).drop_duplicates(subset=["listing_url"])
-
-    with httpx.Client(follow_redirects=True) as client:
-        detail_limit = len(df) if MAX_DETAIL_PAGES is None else min(len(df), MAX_DETAIL_PAGES)
-        print(f"Resolving detail URLs: {detail_limit}/{len(df)}")
-
-        for position, index in enumerate(df.index[:detail_limit], start=1):
-            listing_url = df.at[index, "listing_url"]
-            print(f"Resolving detail URL {position}/{detail_limit}: {listing_url}")
-            df.at[index, "final_listing_url"] = resolve_listing_url(client, listing_url)
-            time.sleep(DETAIL_REQUEST_DELAY_SECONDS)
-
-    output_dir = Path("/tmp/imobiliare-output")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    output_file = output_dir / "listings.parquet"
-    df.to_parquet(output_file, index=False)
-
-    print("Preview:")
-    print(df.head(10).to_string())
-    print(f"Rows scraped: {len(df)}")
-
-    upload_to_hugging_face(output_file)
+    save_and_upload_batch(batch_listings, output_dir, batch_number)
+    print(f"Rows scraped: {len(seen_listing_urls)}")
 
 
 if __name__ == "__main__":
