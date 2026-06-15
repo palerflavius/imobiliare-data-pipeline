@@ -73,16 +73,83 @@ def locality_label_from_listing(listing: dict, *, allow_location_fallback: bool)
     return None
 
 
+def normalized_slug(value: str | None) -> str | None:
+    """Return a slug for comparisons without treating blanks as real values."""
+    slug = label_to_slug(value)
+    return slug or None
+
+
+def ignored_city_slug_values(listing: dict) -> set[str]:
+    """Return region labels that should not be treated as city values."""
+    ignored = {"romania"}
+
+    for field in ("county", "address_country"):
+        slug = normalized_slug(str(listing.get(field))) if not is_blank(listing.get(field)) else None
+        if slug:
+            ignored.add(slug)
+
+    return ignored
+
+
+def first_usable_city_label(labels: list[str], listing: dict) -> str | None:
+    """Pick the first label that does not look like county/country metadata."""
+    ignored = ignored_city_slug_values(listing)
+
+    for label in labels:
+        slug = normalized_slug(label)
+        if slug and slug not in ignored:
+            return label
+
+    return None
+
+
+def city_label_from_region_or_full_address(listing: dict, *, allow_location_fallback: bool) -> str | None:
+    """Infer city for county-wide targets from region/full address, then optional card location."""
+    region = None if is_blank(listing.get("address_region")) else str(listing.get("address_region")).strip()
+    city_label = first_usable_city_label([region] if region else [], listing)
+    if city_label:
+        return city_label
+
+    full_address = None if is_blank(listing.get("full_address_text")) else str(listing.get("full_address_text"))
+    if full_address:
+        parts = [part.strip() for part in full_address.split(",") if part.strip()]
+        # For addresses like "Pipera, Voluntari, Ilfov", the city is usually the last non-county part.
+        city_label = first_usable_city_label(list(reversed(parts)), listing)
+        if city_label:
+            return city_label
+
+    if allow_location_fallback:
+        location = None if is_blank(listing.get("location")) else str(listing.get("location")).split(",", 1)[0].strip()
+        return first_usable_city_label([location] if location else [], listing)
+
+    return None
+
+
 def city_slug_from_location(listing: dict, *, allow_location_fallback: bool = True) -> str | None:
     """Infer a city slug from address or card location fields."""
-    # County-wide targets start as city=all; use the listing location to route output by city.
-    return label_to_slug(locality_label_from_listing(listing, allow_location_fallback=allow_location_fallback))
+    # County-wide targets start as city=all; use region/full address to route output by city.
+    return label_to_slug(
+        city_label_from_region_or_full_address(
+            listing,
+            allow_location_fallback=allow_location_fallback,
+        )
+    )
 
 
 def area_slug_from_address_locality(listing: dict) -> str | None:
     """Use address_locality as the safest area source for fixed-city targets."""
     locality_label = locality_label_from_listing(listing, allow_location_fallback=False)
     return label_to_slug(locality_label)
+
+
+def area_slug_from_full_address(listing: dict) -> str | None:
+    """Use the first full_address_text segment as the stored area value."""
+    full_address = None if is_blank(listing.get("full_address_text")) else str(listing.get("full_address_text"))
+    if not full_address:
+        return None
+
+    first_part = full_address.split(",", 1)[0].strip()
+    return label_to_slug(first_part)
 
 
 def listing_slug(listing_url: str | None) -> str | None:
@@ -230,11 +297,12 @@ def backfill_listing_metadata(
         city_slug = city_slug_from_location(result, allow_location_fallback=allow_location_partition_fallback)
         if city_slug:
             result["city"] = city_slug
-            result["area"] = None
+            area_slug = area_slug_from_full_address(result)
+            result["area"] = area_slug if area_slug != city_slug else None
     elif str(result.get("county")).lower() != "bucuresti":
-        # For fixed-city targets, keep the configured city and derive area from detail address locality.
-        area_slug = area_slug_from_address_locality(result)
-        if area_slug and area_slug != str(result.get("city")).lower():
+        # For fixed-city targets, keep city fixed and store area from the visible full address.
+        area_slug = area_slug_from_full_address(result)
+        if area_slug:
             result["area"] = area_slug
 
     if fill_scraped_at and is_blank(result.get("scraped_at")):

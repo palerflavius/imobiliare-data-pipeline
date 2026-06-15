@@ -84,15 +84,17 @@ def value_from_row(row, field: str, default: str = "") -> str:
 def partition_path_for_row(row) -> str:
     """Build the Hugging Face partition path for an individual row."""
     # Build the destination partition from row metadata, not only from the scraper target.
+    county = value_from_row(row, "county", "unknown")
     parts = {
         "site": value_from_row(row, "site", "imobiliare.ro"),
-        "county": value_from_row(row, "county", "unknown"),
+        "county": county,
         "city": value_from_row(row, "city", "unknown"),
         "offer": value_from_row(row, "offer_type", "sale"),
         "property": value_from_row(row, "property_type", PROPERTY_TYPE),
     }
     area = value_from_row(row, "area")
-    if area:
+    # Only Bucharest sectors are partition dimensions; other area values stay as columns.
+    if safe_path_part(county) == "bucuresti" and safe_path_part(area).startswith("sector-"):
         parts["area"] = area
     return "/".join(f"{key}={safe_path_part(value)}" for key, value in parts.items())
 
