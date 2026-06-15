@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -31,16 +32,47 @@ STOP_WORDS = {
 
 
 def is_blank(value) -> bool:
+    """Return true for null-like values coming from Python or pandas."""
     return value is None or value == "" or str(value).lower() in {"nan", "nat", "none"}
 
 
 def slug_to_label(value: str | None) -> str | None:
+    """Convert a URL slug into a human-readable label."""
     if not value:
         return None
     return " ".join(part.capitalize() for part in value.split("-") if part)
 
 
+def label_to_slug(value: str | None) -> str | None:
+    """Convert a location label into an ASCII partition-safe slug."""
+    if not value:
+        return None
+
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_value = ascii_value.lower()
+    ascii_value = re.sub(r"[^a-z0-9]+", "-", ascii_value)
+    return ascii_value.strip("-") or None
+
+
+def city_slug_from_location(listing: dict) -> str | None:
+    """Infer a city slug from address or card location fields."""
+    # County-wide targets start as city=all; use the listing location to route output by city.
+    for field in ("address_locality", "location"):
+        value = listing.get(field)
+        if is_blank(value):
+            continue
+
+        city_label = str(value).split(",", 1)[0]
+        city_slug = label_to_slug(city_label)
+        if city_slug:
+            return city_slug
+
+    return None
+
+
 def listing_slug(listing_url: str | None) -> str | None:
+    """Return the offer slug portion of a listing URL."""
     if not listing_url:
         return None
 
@@ -53,6 +85,7 @@ def listing_slug(listing_url: str | None) -> str | None:
 
 
 def tokens_until_stop(tokens: list[str]) -> list[str]:
+    """Collect location slug tokens until property descriptors begin."""
     result = []
     for token in tokens:
         if token in STOP_WORDS:
@@ -62,6 +95,7 @@ def tokens_until_stop(tokens: list[str]) -> list[str]:
 
 
 def rooms_from_slug(slug: str) -> float | None:
+    """Infer room count from the listing slug when card parsing missed it."""
     match = re.search(r"-(\d+)-camere(?:-|$)", slug)
     if match:
         return float(match.group(1))
@@ -73,6 +107,7 @@ def rooms_from_slug(slug: str) -> float | None:
 
 
 def offer_type_from_slug(slug: str) -> str | None:
+    """Infer normalized offer type from the listing slug."""
     if "-de-vanzare-" in slug:
         return "sale"
     if "-de-inchiriat-" in slug:
@@ -81,12 +116,14 @@ def offer_type_from_slug(slug: str) -> str | None:
 
 
 def property_type_from_slug(slug: str) -> str | None:
+    """Infer normalized property type from the listing slug."""
     if slug.startswith(("apartament-", "penthouse-", "garsoniera-", "studio-")):
         return "apartments"
     return None
 
 
 def location_tokens_from_slug(slug: str) -> list[str]:
+    """Return the slug tokens that describe the listing location."""
     if "-de-vanzare-" in slug:
         return slug.split("-de-vanzare-", 1)[1].split("-")
     if "-de-inchiriat-" in slug:
@@ -95,6 +132,7 @@ def location_tokens_from_slug(slug: str) -> list[str]:
 
 
 def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
+    """Infer missing scraper metadata from the canonical listing URL."""
     slug = listing_slug(listing_url)
     if not slug:
         return {}
@@ -110,6 +148,7 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
     }
 
     if len(tokens) >= 2 and tokens[0] == "sector" and tokens[1].isdigit():
+        # Bucharest sector URLs encode the sector before the neighborhood.
         sector = f"sector-{tokens[1]}"
         neighborhood_tokens = tokens_until_stop(tokens[2:])
         metadata.update(
@@ -152,6 +191,7 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
         return metadata
 
     if COUNTY_SLUG or CITY_SLUG or AREA_SLUG:
+        # Fall back to the configured target when the URL does not encode a known city pattern.
         metadata.update(
             {
                 "county": COUNTY_SLUG or None,
@@ -164,12 +204,19 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
 
 
 def backfill_listing_metadata(listing: dict, *, fill_scraped_at: bool = False) -> dict:
+    """Fill missing metadata fields on one listing row."""
     metadata = infer_metadata_from_listing_url(listing.get("listing_url") or listing.get("final_listing_url"))
     result = dict(listing)
 
     for field, value in metadata.items():
         if value is not None and is_blank(result.get(field)):
             result[field] = value
+
+    if str(result.get("city")).lower() == "all":
+        # Keep configured city values, but split "all" targets into real city partitions.
+        city_slug = city_slug_from_location(result)
+        if city_slug:
+            result["city"] = city_slug
 
     if fill_scraped_at and is_blank(result.get("scraped_at")):
         result["scraped_at"] = datetime.now(timezone.utc).isoformat()
@@ -178,6 +225,7 @@ def backfill_listing_metadata(listing: dict, *, fill_scraped_at: bool = False) -
 
 
 def backfill_dataframe(df, *, fill_scraped_at: bool = False):
+    """Apply metadata backfill to a pandas DataFrame of listing rows."""
     if df.empty or "listing_url" not in df.columns:
         return df
 

@@ -3,10 +3,11 @@ import os
 import re
 import time
 
-from scraper.core.config import HF_INDEX_PATH, PARTITION_PATH
+from scraper.core.config import HF_INDEX_PATH, PARTITION_PATH, PROPERTY_TYPE, safe_path_part
 
 
 def hf_config() -> tuple[str | None, str | None]:
+    """Read Hugging Face credentials from environment variables."""
     import os
 
     hf_token = os.getenv("HF_TOKEN")
@@ -15,6 +16,7 @@ def hf_config() -> tuple[str | None, str | None]:
 
 
 def load_existing_index():
+    """Load the partition-level listing index from Hugging Face if available."""
     import pandas as pd
     from huggingface_hub import HfFileSystem
 
@@ -36,13 +38,18 @@ def load_existing_index():
 
 
 def index_lookup(index_df) -> tuple[set[str], dict[str, float]]:
+    """Build fast lookup structures for event and price-change detection."""
     if index_df.empty:
         return set(), {}
 
-    event_keys = set(index_df["event_key"].dropna().astype(str))
+    lookup_df = index_df
+    if "record_status" in lookup_df.columns:
+        lookup_df = lookup_df[lookup_df["record_status"] != "deleted"]
+
+    event_keys = set(lookup_df["event_key"].dropna().astype(str))
     latest_prices = {}
 
-    for row in index_df.sort_values("last_seen_at").itertuples(index=False):
+    for row in lookup_df.sort_values("last_seen_at").itertuples(index=False):
         listing_id = getattr(row, "listing_id", None)
         price_eur = getattr(row, "price_eur", None)
         if listing_id is not None and price_eur is not None:
@@ -52,6 +59,7 @@ def index_lookup(index_df) -> tuple[set[str], dict[str, float]]:
 
 
 def parquet_bytes(df) -> bytes:
+    """Serialize a DataFrame into in-memory parquet bytes for upload."""
     from io import BytesIO
 
     buffer = BytesIO()
@@ -59,31 +67,93 @@ def parquet_bytes(df) -> bytes:
     return buffer.getvalue()
 
 
-def batch_path_in_repo(batch_number: int) -> str:
+def is_blank(value) -> bool:
+    """Return true for null-like values coming from Python or pandas."""
+    return value is None or value == "" or str(value).lower() in {"nan", "nat", "none"}
+
+
+def value_from_row(row, field: str, default: str = "") -> str:
+    """Read a field from a dict, pandas Series, or row-like object."""
+    if hasattr(row, "get"):
+        value = row.get(field)
+    else:
+        value = getattr(row, field, None)
+    return default if is_blank(value) else str(value)
+
+
+def partition_path_for_row(row) -> str:
+    """Build the Hugging Face partition path for an individual row."""
+    # Build the destination partition from row metadata, not only from the scraper target.
+    parts = {
+        "site": value_from_row(row, "site", "imobiliare.ro"),
+        "county": value_from_row(row, "county", "unknown"),
+        "city": value_from_row(row, "city", "unknown"),
+        "offer": value_from_row(row, "offer_type", "sale"),
+        "property": value_from_row(row, "property_type", PROPERTY_TYPE),
+    }
+    area = value_from_row(row, "area")
+    if area:
+        parts["area"] = area
+    return "/".join(f"{key}={safe_path_part(value)}" for key, value in parts.items())
+
+
+def batch_path_in_repo(batch_number: int, partition_path: str = PARTITION_PATH) -> str:
+    """Return the raw parquet path for one batch inside a partition."""
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return f"raw/{PARTITION_PATH}/date={date_str}/listings_batch_{batch_number:04d}.parquet"
+    return f"raw/{partition_path}/date={date_str}/listings_batch_{batch_number:04d}.parquet"
+
+
+def deleted_listings_dataframe(index_df, seen_listing_ids: set[str], output_columns: list[str]):
+    """Create deleted rows for indexed listings missing from the current run."""
+    import pandas as pd
+
+    if index_df.empty or "listing_id" not in index_df.columns:
+        return pd.DataFrame()
+
+    latest_df = index_df.copy()
+    latest_df = latest_df.dropna(subset=["listing_id"])
+    latest_df["listing_id"] = latest_df["listing_id"].astype(str)
+
+    if latest_df.empty:
+        return pd.DataFrame()
+
+    if "last_seen_at" in latest_df.columns:
+        latest_df = latest_df.sort_values("last_seen_at")
+
+    # Only emit a deletion once: if the latest index state is already deleted, skip it.
+    latest_df = latest_df.drop_duplicates(subset=["listing_id"], keep="last")
+    if "record_status" in latest_df.columns:
+        latest_df = latest_df[latest_df["record_status"] != "deleted"]
+    latest_df = latest_df[~latest_df["listing_id"].isin(seen_listing_ids)]
+
+    if latest_df.empty:
+        return pd.DataFrame()
+
+    latest_df["record_status"] = "deleted"
+    latest_df["deleted_detected_at"] = datetime.now(timezone.utc).isoformat()
+    latest_df["scraped_at"] = latest_df["deleted_detected_at"]
+
+    for column in output_columns:
+        if column not in latest_df.columns:
+            latest_df[column] = None
+
+    return latest_df[output_columns]
 
 
 def update_index(index_df, batch_df):
+    """Merge uploaded rows back into the listing index."""
     import pandas as pd
 
     now = datetime.now(timezone.utc).isoformat()
     index_rows = []
 
-    for row in batch_df.itertuples(index=False):
-        index_rows.append(
-            {
-                "event_key": row.event_key,
-                "listing_id": str(row.listing_id),
-                "price_eur": float(row.price_eur),
-                "listing_url": row.listing_url,
-                "final_listing_url": row.final_listing_url,
-                "title": row.title,
-                "location": row.location,
-                "first_seen_at": row.scraped_at,
-                "last_seen_at": now,
-            }
-        )
+    for row in batch_df.to_dict("records"):
+        index_row = dict(row)
+        index_row["listing_id"] = str(index_row.get("listing_id"))
+        if is_blank(index_row.get("first_seen_at")):
+            index_row["first_seen_at"] = index_row.get("scraped_at")
+        index_row["last_seen_at"] = now
+        index_rows.append(index_row)
 
     new_index_df = pd.DataFrame(index_rows)
     if index_df.empty:
@@ -94,6 +164,7 @@ def update_index(index_df, batch_df):
 
 
 def add_index_operation(index_df, operations: list) -> None:
+    """Stage the updated index parquet in the current Hugging Face commit."""
     if index_df.empty:
         return
 
@@ -108,6 +179,7 @@ def add_index_operation(index_df, operations: list) -> None:
 
 
 def retry_delay_seconds(error: Exception) -> int:
+    """Choose a wait time after a Hugging Face rate-limit response."""
     response = getattr(error, "response", None)
     if response is not None:
         retry_after = response.headers.get("retry-after")
@@ -126,6 +198,7 @@ def retry_delay_seconds(error: Exception) -> int:
 
 
 def upload_operations_to_hugging_face(operations: list) -> None:
+    """Upload all staged parquet files in a single Hugging Face commit."""
     from huggingface_hub import HfApi
     from huggingface_hub.errors import HfHubHTTPError
 

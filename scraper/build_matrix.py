@@ -7,6 +7,7 @@ BASE_URL = "https://www.imobiliare.ro"
 
 
 def offer_property_path(offer_type: str, property_type: str) -> str:
+    """Map normalized scraper dimensions to the URL path used by imobiliare.ro."""
     if offer_type == "sale" and property_type == "apartments":
         return "vanzare-apartamente"
     return f"{offer_type}-{property_type}"
@@ -20,17 +21,20 @@ def start_url(
     offer_type: str,
     property_type: str,
 ) -> str:
+    """Build the search URL for one GitHub Actions matrix target."""
     if site_name != "imobiliare.ro":
         raise ValueError(f"Unsupported site_name: {site_name}")
 
     path = offer_property_path(offer_type, property_type)
 
+    # Bucharest URLs use the city path directly, not the judetul-* county form.
     if county_slug == "bucuresti":
         url = f"{BASE_URL}/{path}/bucuresti"
         if area_slug:
             url = f"{url}/{area_slug}"
         return url
 
+    # city=all means scrape the county page once; rows can still be partitioned later by detected city.
     if city_slug == "all":
         return f"{BASE_URL}/{path}/judetul-{county_slug}"
 
@@ -41,6 +45,7 @@ def start_url(
 
 
 def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug: str, area_slug: str | None = None) -> None:
+    """Append one scraper target to the GitHub Actions matrix payload."""
     site_name = defaults["site_name"]
     targets.append(
         {
@@ -63,6 +68,7 @@ def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug:
 
 
 def build_targets(config: dict) -> list[dict]:
+    """Expand the JSON target config into a flat list of scraper jobs."""
     defaults = config["defaults"]
     targets = []
 
@@ -71,6 +77,7 @@ def build_targets(config: dict) -> list[dict]:
         mode = county.get("mode", "municipality")
         municipality_slug = county.get("municipality_slug")
 
+        # Modes define the county-level target; optional localities add extra targets below.
         if mode == "all":
             add_target(targets, defaults, county_slug, "all")
         elif mode == "municipality":
@@ -86,6 +93,7 @@ def build_targets(config: dict) -> list[dict]:
             raise ValueError(f"Unsupported mode for {county_slug}: {mode}")
 
         for locality in county.get("localities", []):
+            # A locality can be a simple city slug or an object with area-level targets.
             if isinstance(locality, str):
                 add_target(targets, defaults, county_slug, locality)
                 continue
@@ -99,6 +107,7 @@ def build_targets(config: dict) -> list[dict]:
 
 
 def main() -> None:
+    """Print a compact JSON matrix for GitHub Actions."""
     config_path = Path(sys.argv[1] if len(sys.argv) > 1 else "scraper/targets/imobiliare.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     targets = build_targets(config)

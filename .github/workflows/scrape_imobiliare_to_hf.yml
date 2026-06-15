@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
 
     steps:
@@ -54,9 +54,9 @@ jobs:
           PROPERTY_TYPE: ${{ matrix.target.property_type }}
           START_URL: ${{ matrix.target.start_url }}
           BATCH_SIZE: "2000"
-          PAGE_WORKERS: "6"
-          DETAIL_WORKERS: "4"
-          DETAIL_REQUEST_DELAY_SECONDS: "0.2"
+          PAGE_WORKERS: "8"
+          DETAIL_WORKERS: "8"
+          DETAIL_REQUEST_DELAY_SECONDS: "0.1"
           REQUEST_DELAY_SECONDS: "0.5"
           HF_COMMIT_RETRIES: "3"
           HF_COMMIT_RETRY_FALLBACK_SECONDS: "3600"

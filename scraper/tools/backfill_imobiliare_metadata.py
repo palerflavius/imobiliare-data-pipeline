@@ -8,16 +8,19 @@ from scraper.storage.huggingface import parquet_bytes
 
 
 def has_changed(before: pd.DataFrame, after: pd.DataFrame) -> bool:
+    """Return true when metadata repair changed any cell."""
     return not before.fillna("").astype(str).equals(after.fillna("").astype(str))
 
 
 def parquet_files(path: Path) -> list[Path]:
+    """Return one parquet file or all parquet files under a directory."""
     if path.is_file():
         return [path]
     return sorted(path.rglob("*.parquet"))
 
 
 def backfill_local(input_path: Path, output_path: Path | None, overwrite: bool) -> None:
+    """Repair metadata in local parquet files."""
     files = parquet_files(input_path)
     changed = 0
 
@@ -27,6 +30,7 @@ def backfill_local(input_path: Path, output_path: Path | None, overwrite: bool) 
         if not has_changed(df, fixed):
             continue
 
+        # Preserve directory layout when writing repaired files to a separate output root.
         if overwrite:
             target = file_path
         elif input_path.is_file():
@@ -43,6 +47,7 @@ def backfill_local(input_path: Path, output_path: Path | None, overwrite: bool) 
 
 
 def backfill_huggingface(repo_id: str, prefix: str, commit: bool, max_files: int | None) -> None:
+    """Repair metadata in Hugging Face parquet files, optionally committing changes."""
     import os
     from huggingface_hub import CommitOperationAdd, HfApi, HfFileSystem
 
@@ -53,6 +58,7 @@ def backfill_huggingface(repo_id: str, prefix: str, commit: bool, max_files: int
     operations = []
 
     for path in paths:
+        # Index files are derived state and should be managed by the main scraper.
         if "/index/" in path:
             continue
         if max_files is not None and len(operations) >= max_files:
@@ -87,6 +93,7 @@ def backfill_huggingface(repo_id: str, prefix: str, commit: bool, max_files: int
 
 
 def main() -> None:
+    """Parse CLI options and run either local or Hugging Face backfill."""
     parser = argparse.ArgumentParser(description="Backfill missing imobiliare.ro metadata from listing_url.")
     parser.add_argument("--input", type=Path, help="Local parquet file or directory.")
     parser.add_argument("--output", type=Path, help="Output directory for local repair.")

@@ -5,6 +5,7 @@ from scraper.core.config import HEADERS
 
 
 def is_retryable_fetch_error(error: BaseException) -> bool:
+    """Retry transient network failures, rate limits, and server errors."""
     if isinstance(error, httpx.HTTPStatusError):
         status_code = error.response.status_code
         return status_code == 429 or status_code >= 500
@@ -19,11 +20,13 @@ def is_retryable_fetch_error(error: BaseException) -> bool:
     reraise=True,
 )
 def fetch_response(client: httpx.Client, url: str) -> httpx.Response:
+    """Fetch a URL with shared headers and retry handling."""
     response = client.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
     return response
 
 
 def fetch(client: httpx.Client, url: str) -> str:
+    """Return only the response body for scraper pages."""
     response = fetch_response(client, url)
     return response.text

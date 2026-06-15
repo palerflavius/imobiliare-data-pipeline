@@ -2,6 +2,7 @@ import os
 import re
 
 
+# Runtime target metadata comes from GitHub Actions matrix values or local env vars.
 SITE_NAME = os.getenv("SITE_NAME", "imobiliare.ro")
 COUNTY_SLUG = os.getenv("COUNTY_SLUG", "brasov")
 CITY_SLUG = os.getenv("CITY_SLUG", "brasov")
@@ -9,6 +10,7 @@ AREA_SLUG = os.getenv("AREA_SLUG", "")
 OFFER_TYPE = os.getenv("OFFER_TYPE", "sale")
 PROPERTY_TYPE = os.getenv("PROPERTY_TYPE", "apartments")
 
+# Tuning knobs control crawl speed and batch size without code changes.
 REQUEST_DELAY_SECONDS = float(os.getenv("REQUEST_DELAY_SECONDS", "2"))
 DETAIL_REQUEST_DELAY_SECONDS = float(os.getenv("DETAIL_REQUEST_DELAY_SECONDS", "0.2"))
 MAX_PAGES = int(os.getenv("MAX_PAGES", "0")) or None
@@ -23,6 +25,7 @@ HEADERS = {
 
 
 def safe_path_part(value: str) -> str:
+    """Convert arbitrary metadata into a stable partition path segment."""
     value = value.strip().lower()
     value = re.sub(r"[^a-z0-9_.-]+", "-", value)
     return value.strip("-") or "unknown"
@@ -32,6 +35,7 @@ START_URL = os.getenv("START_URL", "")
 
 
 def partition_path() -> str:
+    """Build the default Hugging Face partition path for the current target."""
     parts = {
         "site": SITE_NAME,
         "county": COUNTY_SLUG,

@@ -14,6 +14,7 @@ from scraper.sites.imobiliare.parser import clean_text
 
 
 def find_postal_addresses(value) -> list[dict]:
+    """Recursively collect PostalAddress objects from JSON-LD payloads."""
     addresses = []
 
     if isinstance(value, dict):
@@ -30,7 +31,104 @@ def find_postal_addresses(value) -> list[dict]:
     return addresses
 
 
+def find_values_for_key(value, key: str) -> list:
+    """Recursively collect every value assigned to a target JSON key."""
+    values = []
+
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            if child_key == key:
+                values.append(child_value)
+            values.extend(find_values_for_key(child_value, key))
+
+    if isinstance(value, list):
+        for child in value:
+            values.extend(find_values_for_key(child, key))
+
+    return values
+
+
+def json_payloads_from_scripts(tree: HTMLParser) -> list:
+    """Extract candidate JSON payloads that may contain listing dates."""
+    payloads = []
+    decoder = json.JSONDecoder()
+    target_keys = ("dateCreated", "datePublished", "dateModified")
+
+    # The date fields can live inside embedded app state, not only JSON-LD.
+    for node in tree.css("script"):
+        raw_text = node.text()
+        if not raw_text or not any(key in raw_text for key in target_keys):
+            continue
+
+        text = html.unescape(raw_text).strip()
+        candidates = [text]
+        if "\\\"" in text:
+            candidates.append(text.encode("utf-8").decode("unicode_escape", errors="ignore"))
+
+        for candidate in candidates:
+            try:
+                payloads.append(json.loads(candidate))
+                continue
+            except json.JSONDecodeError:
+                pass
+
+            # Some app-state scripts wrap JSON inside JavaScript assignments.
+            for match in re.finditer(r"[\[{]", candidate):
+                try:
+                    payload, _ = decoder.raw_decode(candidate[match.start() :])
+                except json.JSONDecodeError:
+                    continue
+                payloads.append(payload)
+
+    return payloads
+
+
+def first_clean_string(values: list) -> str | None:
+    """Return the first non-empty string from a list of candidate values."""
+    for value in values:
+        if isinstance(value, str):
+            cleaned = clean_text(value)
+            if cleaned:
+                return cleaned
+    return None
+
+
+def extract_listing_dates(payloads: list) -> dict:
+    """Extract dateCreated/datePublished/dateModified from parsed payloads."""
+    dates = {}
+    for field in ("dateCreated", "datePublished", "dateModified"):
+        value = first_clean_string([item for payload in payloads for item in find_values_for_key(payload, field)])
+        if value:
+            dates[field] = value
+    return dates
+
+
+def extract_listing_contact(tree: HTMLParser) -> dict:
+    """Extract agent and agency values exposed in listing BI attributes."""
+    agency = None
+    agent = None
+
+    # imobiliare.ro exposes seller identity in BI attributes on the detail page.
+    for node in tree.css("[data-bi-listing-agency], [data-bi-listing-agent]"):
+        agency = agency or clean_text(node.attributes.get("data-bi-listing-agency"))
+        agent = agent or clean_text(node.attributes.get("data-bi-listing-agent"))
+
+    result = {
+        "data_bi_listing_agency": agency,
+        "data_bi_listing_agent": agent,
+    }
+
+    if agency and agent:
+        # If agency and agent match, the listing is treated as owner-posted.
+        result["seller_type"] = "owner" if agency == agent else "agency"
+    elif agency or agent:
+        result["seller_type"] = "unknown"
+
+    return result
+
+
 def clean_address_value(value: str | None) -> str | None:
+    """Normalize address values from JSON-LD or rendered markup."""
     value = clean_text(value)
     if not value:
         return None
@@ -42,6 +140,7 @@ def clean_address_value(value: str | None) -> str | None:
 
 
 def is_portal_company_address(address: dict) -> bool:
+    """Filter out the portal's own company address when it appears in JSON-LD."""
     street = clean_address_value(address.get("streetAddress")) or ""
     locality = clean_address_value(address.get("addressLocality")) or ""
     normalized_locality = locality.lower().replace("\u0219", "s")
@@ -50,6 +149,7 @@ def is_portal_company_address(address: dict) -> bool:
 
 
 def extract_address_from_json_ld(tree: HTMLParser) -> dict:
+    """Read listing address fields from JSON-LD scripts."""
     for node in tree.css('script[type="application/ld+json"]'):
         raw_json = node.text()
         if not raw_json:
@@ -75,6 +175,7 @@ def extract_address_from_json_ld(tree: HTMLParser) -> dict:
 
 
 def extract_address_from_markup(tree: HTMLParser) -> dict:
+    """Read visible address text from the rendered detail page markup."""
     node = tree.css_first('[data-cy="listing-address"]')
     if not node:
         return {}
@@ -98,6 +199,7 @@ def extract_address_from_markup(tree: HTMLParser) -> dict:
 
 
 def extract_detail_address(tree: HTMLParser) -> dict:
+    """Merge structured and rendered address sources."""
     address = extract_address_from_json_ld(tree)
     markup_address = extract_address_from_markup(tree)
 
@@ -108,19 +210,29 @@ def extract_detail_address(tree: HTMLParser) -> dict:
     return address
 
 
+def extract_detail_metadata(tree: HTMLParser) -> dict:
+    """Extract all non-card metadata available on the detail page."""
+    payloads = json_payloads_from_scripts(tree)
+    metadata = extract_listing_contact(tree)
+    metadata.update(extract_listing_dates(payloads))
+    return metadata
+
+
 def resolve_listing_url(client: httpx.Client, listing_url: str) -> tuple[str, str | None, dict]:
+    """Fetch a detail page, resolve its canonical URL, and extract metadata."""
     try:
         response = fetch_response(client, listing_url)
         tree = HTMLParser(response.text)
-        address = extract_detail_address(tree)
+        detail_metadata = extract_detail_address(tree)
+        detail_metadata.update(extract_detail_metadata(tree))
         canonical = tree.css_first('link[rel="canonical"]')
 
         if canonical:
             href = canonical.attributes.get("href")
             if href:
-                return urljoin(listing_url, href), None, address
+                return urljoin(listing_url, href), None, detail_metadata
 
-        return str(response.url), None, address
+        return str(response.url), None, detail_metadata
     except httpx.HTTPStatusError as error:
         status_code = error.response.status_code
         message = f"HTTP {status_code}: {error.response.reason_phrase}"
@@ -132,35 +244,51 @@ def resolve_listing_url(client: httpx.Client, listing_url: str) -> tuple[str, st
         return listing_url, message, {}
 
 
-def resolve_listing_detail(index_and_url: tuple[int, str]) -> tuple[int, str, str | None, dict]:
-    index, listing_url = index_and_url
+def chunked_tasks(tasks: list[tuple[int, str]], chunk_count: int) -> list[list[tuple[int, str]]]:
+    """Distribute detail-page tasks across worker chunks."""
+    chunks = [[] for _ in range(max(1, chunk_count))]
+    for position, task in enumerate(tasks):
+        chunks[position % len(chunks)].append(task)
+    return [chunk for chunk in chunks if chunk]
 
-    if DETAIL_REQUEST_DELAY_SECONDS > 0:
-        time.sleep(DETAIL_REQUEST_DELAY_SECONDS)
 
+def resolve_listing_detail_chunk(tasks: list[tuple[int, str]]) -> list[tuple[int, str, str | None, dict]]:
+    """Resolve a chunk of detail pages with one reusable HTTP client."""
+    results = []
+
+    # Reuse one HTTP client per worker chunk to keep connections warm.
     with httpx.Client(follow_redirects=True) as client:
-        final_url, detail_error, address = resolve_listing_url(client, listing_url)
+        for index, listing_url in tasks:
+            if DETAIL_REQUEST_DELAY_SECONDS > 0:
+                time.sleep(DETAIL_REQUEST_DELAY_SECONDS)
 
-    return index, final_url, detail_error, address
+            final_url, detail_error, address = resolve_listing_url(client, listing_url)
+            results.append((index, final_url, detail_error, address))
+
+    return results
 
 
 def resolve_detail_urls(df):
+    """Enrich a DataFrame with canonical URLs and detail-page metadata."""
     detail_limit = len(df) if MAX_DETAIL_PAGES is None else min(len(df), MAX_DETAIL_PAGES)
     print(f"Resolving detail URLs: {detail_limit}/{len(df)} with {DETAIL_WORKERS} workers")
 
     tasks = [(index, df.at[index, "listing_url"]) for index in df.index[:detail_limit]]
 
     with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
-        futures = [executor.submit(resolve_listing_detail, task) for task in tasks]
+        chunks = chunked_tasks(tasks, DETAIL_WORKERS)
+        futures = [executor.submit(resolve_listing_detail_chunk, chunk) for chunk in chunks]
+        resolved_count = 0
 
-        for position, future in enumerate(as_completed(futures), start=1):
-            index, final_url, detail_error, address = future.result()
-            df.at[index, "final_listing_url"] = final_url
-            df.at[index, "detail_error"] = detail_error
+        for future in as_completed(futures):
+            for index, final_url, detail_error, address in future.result():
+                resolved_count += 1
+                df.at[index, "final_listing_url"] = final_url
+                df.at[index, "detail_error"] = detail_error
 
-            for field, value in address.items():
-                df.at[index, field] = value
+                for field, value in address.items():
+                    df.at[index, field] = value
 
-            print(f"Resolved detail URL {position}/{detail_limit}: {final_url}")
+                print(f"Resolved detail URL {resolved_count}/{detail_limit}: {final_url}")
 
     return df

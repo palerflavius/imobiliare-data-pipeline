@@ -8,12 +8,14 @@ from scraper.core.config import AREA_SLUG, CITY_SLUG, COUNTY_SLUG, OFFER_TYPE, P
 
 
 def clean_text(value: str | None) -> str | None:
+    """Normalize whitespace and empty strings from scraped text."""
     if not value:
         return None
     return re.sub(r"\s+", " ", value).strip()
 
 
 def normalize_number(value: str | None) -> float | None:
+    """Convert Romanian-formatted numeric text into a float."""
     if not value:
         return None
 
@@ -28,6 +30,7 @@ def normalize_number(value: str | None) -> float | None:
 
 
 def extract_price_eur(text: str) -> float | None:
+    """Extract the EUR price from a listing card text block."""
     match = re.search(
         r"(\d{2,3}(?:[.\s]\d{3})+|\d{4,})\s*(?:EUR|euro|\u20ac|\u00e2\u201a\u00ac)",
         text,
@@ -39,6 +42,7 @@ def extract_price_eur(text: str) -> float | None:
 
 
 def extract_rooms(text: str) -> float | None:
+    """Extract the number of rooms from listing card text."""
     match = re.search(r"(\d+(?:[,.]\d+)?)\s+camere?", text, re.IGNORECASE)
     if not match:
         return None
@@ -46,6 +50,7 @@ def extract_rooms(text: str) -> float | None:
 
 
 def extract_area_sqm(text: str) -> float | None:
+    """Extract usable area in square meters from listing card text."""
     match = re.search(r"(\d+(?:[,.]\d+)?)\s*mp", text, re.IGNORECASE)
     if not match:
         return None
@@ -53,6 +58,7 @@ def extract_area_sqm(text: str) -> float | None:
 
 
 def extract_floor(text: str) -> str | None:
+    """Extract floor text while preserving the site's original wording."""
     match = re.search(
         r"(Etaj\s+[^\n\r]+|Mansard[aa]\s*/\s*\d+|Mansard\u0103\s*/\s*\d+|Parter\s*/\s*\d+)",
         text,
@@ -64,6 +70,7 @@ def extract_floor(text: str) -> str | None:
 
 
 def looks_like_location(line: str) -> bool:
+    """Return true when a card line looks like a location line."""
     line = clean_text(line) or ""
     if "," not in line:
         return False
@@ -72,6 +79,7 @@ def looks_like_location(line: str) -> bool:
 
 
 def extract_location(lines: list[str]) -> str | None:
+    """Find the first card line that resembles a location."""
     for line in lines:
         if looks_like_location(line):
             return clean_text(line)
@@ -79,12 +87,14 @@ def extract_location(lines: list[str]) -> str | None:
 
 
 def node_to_lines(node) -> list[str]:
+    """Convert an HTML node into cleaned non-empty text lines."""
     text = node.text(separator="\n")
     lines = [clean_text(line) for line in text.splitlines()]
     return [line for line in lines if line]
 
 
 def is_listing_title(line: str) -> bool:
+    """Heuristically detect whether a text line is the listing title."""
     line = clean_text(line) or ""
 
     if len(line) < 20:
@@ -115,6 +125,7 @@ def is_listing_title(line: str) -> bool:
     if any(word in line.lower() for word in bad_keywords):
         return False
 
+    # Titles are noisy in listing cards, so require a real-estate keyword.
     good_keywords = [
         "apartament",
         "penthouse",
@@ -131,11 +142,13 @@ def is_listing_title(line: str) -> bool:
 
 
 def listing_id_from_url(url: str) -> str | None:
+    """Extract the numeric listing id from an imobiliare.ro offer URL."""
     match = re.search(r"-(\d+)(?:[/?#]|$)", url)
     return match.group(1) if match else None
 
 
 def listing_event_key(listing: dict) -> str:
+    """Create a key that changes when the listing price changes."""
     listing_id = listing.get("listing_id") or listing.get("listing_url")
     price_eur = listing.get("price_eur")
     price_key = "" if price_eur is None else f"{float(price_eur):.2f}"
@@ -143,6 +156,7 @@ def listing_event_key(listing: dict) -> str:
 
 
 def find_card_container(anchor):
+    """Walk up from a listing link until the surrounding card is found."""
     node = anchor
     for _ in range(8):
         if node is None:
@@ -158,6 +172,7 @@ def find_card_container(anchor):
 
 
 def extract_title_from_card(lines: list[str]) -> str | None:
+    """Extract the title from cleaned card lines."""
     for line in lines:
         if is_listing_title(line):
             return clean_text(line)
@@ -165,6 +180,7 @@ def extract_title_from_card(lines: list[str]) -> str | None:
 
 
 def extract_last_page(html_text: str) -> int:
+    """Detect the last result page from links or embedded pagination JSON."""
     page_numbers = [1]
 
     for match in re.finditer(r"[?&]page=(\d+)", html_text):
@@ -179,6 +195,7 @@ def extract_last_page(html_text: str) -> int:
 
 
 def page_url(base_url: str, page_number: int) -> str:
+    """Return the URL for a requested result page."""
     if page_number == 1:
         return base_url
 
@@ -189,6 +206,7 @@ def page_url(base_url: str, page_number: int) -> str:
 
 
 def parse_listings(html_text: str, page_url: str) -> list[dict]:
+    """Parse listing cards from one result page into normalized row dictionaries."""
     tree = HTMLParser(html_text)
     listings = []
 
@@ -197,6 +215,7 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
         if not href or "/oferta/" not in href:
             continue
 
+        # The card data is intentionally lightweight; detail pages enrich it later.
         listing_url = urljoin(page_url, href)
         card = find_card_container(anchor)
         block_lines = node_to_lines(card)
@@ -241,6 +260,7 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
 
     unique = {}
     for item in listings:
+        # Cards can repeat due to promoted listings or duplicated anchors.
         unique[item["listing_url"]] = item
 
     return list(unique.values())
