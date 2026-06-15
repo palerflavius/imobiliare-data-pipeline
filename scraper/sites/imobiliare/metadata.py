@@ -87,6 +87,8 @@ def ignored_city_slug_values(listing: dict) -> set[str]:
         slug = normalized_slug(str(listing.get(field))) if not is_blank(listing.get(field)) else None
         if slug:
             ignored.add(slug)
+            ignored.add(f"judetul-{slug}")
+            ignored.add(f"judet-{slug}")
 
     return ignored
 
@@ -120,7 +122,13 @@ def city_label_from_region_or_full_address(listing: dict, *, allow_location_fall
 
     if allow_location_fallback:
         location = None if is_blank(listing.get("location")) else str(listing.get("location")).split(",", 1)[0].strip()
-        return first_usable_city_label([location] if location else [], listing)
+        city_label = first_usable_city_label([location] if location else [], listing)
+        if city_label:
+            return city_label
+
+        # If the only region value is "Judetul Ilfov", fall back to address_locality.
+        locality = None if is_blank(listing.get("address_locality")) else str(listing.get("address_locality")).strip()
+        return first_usable_city_label([locality] if locality else [], listing)
 
     return None
 

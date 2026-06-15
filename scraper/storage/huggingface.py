@@ -3,7 +3,7 @@ import os
 import re
 import time
 
-from scraper.core.config import HF_INDEX_PATH, PARTITION_PATH, PROPERTY_TYPE, safe_path_part
+from scraper.core.config import CITY_SLUG, HF_INDEX_PATH, PARTITION_PATH, PROPERTY_TYPE, safe_path_part
 
 
 def hf_config() -> tuple[str | None, str | None]:
@@ -13,6 +13,21 @@ def hf_config() -> tuple[str | None, str | None]:
     hf_token = os.getenv("HF_TOKEN")
     hf_repo_id = os.getenv("HF_REPO_ID")
     return hf_token, hf_repo_id
+
+
+def index_path_in_repo(partition_path: str = PARTITION_PATH) -> str:
+    """Return the index path beside date= folders for one partition."""
+    return f"raw/{partition_path}/index/listing_price_index.parquet"
+
+
+def index_glob_for_current_target() -> str:
+    """Return the Hugging Face glob used to load index state for this target."""
+    if CITY_SLUG != "all":
+        return HF_INDEX_PATH
+
+    parts = PARTITION_PATH.split("/")
+    glob_parts = ["city=*" if part == "city=all" else part for part in parts]
+    return f"raw/{'/'.join(glob_parts)}/index/listing_price_index.parquet"
 
 
 def load_existing_index():
@@ -27,8 +42,17 @@ def load_existing_index():
 
     try:
         fs = HfFileSystem(token=hf_token)
-        with fs.open(f"datasets/{hf_repo_id}/{HF_INDEX_PATH}", "rb") as index_file:
-            df = pd.read_parquet(index_file)
+        index_glob = index_glob_for_current_target()
+        index_paths = sorted(fs.glob(f"datasets/{hf_repo_id}/{index_glob}"))
+        if not index_paths:
+            print(f"No existing Hugging Face index files matched {index_glob}.")
+            return pd.DataFrame()
+
+        frames = []
+        for index_path in index_paths:
+            with fs.open(index_path, "rb") as index_file:
+                frames.append(pd.read_parquet(index_file))
+        df = pd.concat(frames, ignore_index=True)
     except Exception as error:
         print(f"No existing Hugging Face index loaded ({type(error).__name__}: {error}).")
         return pd.DataFrame()
@@ -166,18 +190,21 @@ def update_index(index_df, batch_df):
 
 
 def add_index_operation(index_df, operations: list) -> None:
-    """Stage the updated index parquet in the current Hugging Face commit."""
+    """Stage updated index parquet files beside each real partition's date= folders."""
     if index_df.empty:
         return
 
     from huggingface_hub import CommitOperationAdd
 
-    operations.append(
-        CommitOperationAdd(
-            path_in_repo=HF_INDEX_PATH,
-            path_or_fileobj=parquet_bytes(index_df),
+    index_df = index_df.copy()
+    index_df["_partition_path"] = [partition_path_for_row(row) for row in index_df.to_dict("records")]
+    for partition_path, partition_df in index_df.groupby("_partition_path", sort=True):
+        operations.append(
+            CommitOperationAdd(
+                path_in_repo=index_path_in_repo(partition_path),
+                path_or_fileobj=parquet_bytes(partition_df.drop(columns=["_partition_path"])),
+            )
         )
-    )
 
 
 def retry_delay_seconds(error: Exception) -> int:
