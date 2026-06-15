@@ -55,20 +55,34 @@ def label_to_slug(value: str | None) -> str | None:
     return ascii_value.strip("-") or None
 
 
-def city_slug_from_location(listing: dict) -> str | None:
-    """Infer a city slug from address or card location fields."""
-    # County-wide targets start as city=all; use the listing location to route output by city.
-    for field in ("address_locality", "location"):
+def locality_label_from_listing(listing: dict, *, allow_location_fallback: bool) -> str | None:
+    """Return the best locality-like label available on a listing row."""
+    fields = ["address_locality", "full_address_text"]
+    if allow_location_fallback:
+        fields.append("location")
+
+    for field in fields:
         value = listing.get(field)
         if is_blank(value):
             continue
 
-        city_label = str(value).split(",", 1)[0]
-        city_slug = label_to_slug(city_label)
-        if city_slug:
-            return city_slug
+        label = str(value).split(",", 1)[0].strip()
+        if label:
+            return label
 
     return None
+
+
+def city_slug_from_location(listing: dict, *, allow_location_fallback: bool = True) -> str | None:
+    """Infer a city slug from address or card location fields."""
+    # County-wide targets start as city=all; use the listing location to route output by city.
+    return label_to_slug(locality_label_from_listing(listing, allow_location_fallback=allow_location_fallback))
+
+
+def area_slug_from_address_locality(listing: dict) -> str | None:
+    """Use address_locality as the safest area source for fixed-city targets."""
+    locality_label = locality_label_from_listing(listing, allow_location_fallback=False)
+    return label_to_slug(locality_label)
 
 
 def listing_slug(listing_url: str | None) -> str | None:
@@ -164,12 +178,10 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
 
     if tokens and tokens[0] == "bucuresti":
         neighborhood_tokens = tokens_until_stop(tokens[1:])
-        neighborhood_slug = "-".join(neighborhood_tokens) or None
         metadata.update(
             {
                 "county": "bucuresti",
                 "city": "bucuresti",
-                "area": neighborhood_slug,
                 "address_locality": slug_to_label("-".join(neighborhood_tokens)),
                 "address_region": "Bucuresti",
             }
@@ -177,14 +189,10 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
         return metadata
 
     if tokens and tokens[0] == "brasov":
-        neighborhood_tokens = tokens_until_stop(tokens[1:])
-        neighborhood_slug = "-".join(neighborhood_tokens) or None
         metadata.update(
             {
                 "county": "brasov",
                 "city": "brasov",
-                "area": neighborhood_slug,
-                "address_locality": slug_to_label("-".join(neighborhood_tokens)),
                 "address_region": "Brasov",
             }
         )
@@ -203,7 +211,12 @@ def infer_metadata_from_listing_url(listing_url: str | None) -> dict:
     return metadata
 
 
-def backfill_listing_metadata(listing: dict, *, fill_scraped_at: bool = False) -> dict:
+def backfill_listing_metadata(
+    listing: dict,
+    *,
+    fill_scraped_at: bool = False,
+    allow_location_partition_fallback: bool = True,
+) -> dict:
     """Fill missing metadata fields on one listing row."""
     metadata = infer_metadata_from_listing_url(listing.get("listing_url") or listing.get("final_listing_url"))
     result = dict(listing)
@@ -214,9 +227,15 @@ def backfill_listing_metadata(listing: dict, *, fill_scraped_at: bool = False) -
 
     if str(result.get("city")).lower() == "all":
         # Keep configured city values, but split "all" targets into real city partitions.
-        city_slug = city_slug_from_location(result)
+        city_slug = city_slug_from_location(result, allow_location_fallback=allow_location_partition_fallback)
         if city_slug:
             result["city"] = city_slug
+            result["area"] = None
+    elif str(result.get("county")).lower() != "bucuresti":
+        # For fixed-city targets, keep the configured city and derive area from detail address locality.
+        area_slug = area_slug_from_address_locality(result)
+        if area_slug and area_slug != str(result.get("city")).lower():
+            result["area"] = area_slug
 
     if fill_scraped_at and is_blank(result.get("scraped_at")):
         result["scraped_at"] = datetime.now(timezone.utc).isoformat()
@@ -234,7 +253,14 @@ def backfill_dataframe(df, *, fill_scraped_at: bool = False):
     if all(field in df.columns for field in required_fields):
         before_missing = df[required_fields].apply(lambda column: column.map(is_blank)).any(axis=1)
 
-    rows = [backfill_listing_metadata(row, fill_scraped_at=fill_scraped_at) for row in df.to_dict("records")]
+    rows = [
+        backfill_listing_metadata(
+            row,
+            fill_scraped_at=fill_scraped_at,
+            allow_location_partition_fallback=True,
+        )
+        for row in df.to_dict("records")
+    ]
     result = type(df)(rows)
     if "metadata_backfilled_at" not in result.columns:
         result["metadata_backfilled_at"] = None

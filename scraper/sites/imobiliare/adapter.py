@@ -47,7 +47,10 @@ class ImobiliareSiteAdapter:
 
     def parse_listings(self, html_text: str, page_url: str) -> list[dict]:
         """Parse listing cards and fill any metadata inferable from URLs."""
-        return [backfill_listing_metadata(listing) for listing in parser.parse_listings(html_text, page_url)]
+        return [
+            backfill_listing_metadata(listing, allow_location_partition_fallback=False)
+            for listing in parser.parse_listings(html_text, page_url)
+        ]
 
     def listing_event_key(self, listing: dict) -> str:
         """Use the site-specific event key for price-change detection."""
