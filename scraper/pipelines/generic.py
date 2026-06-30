@@ -2,10 +2,8 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import httpx
-
 from scraper.core.config import BATCH_SIZE, MAX_PAGES, PAGE_WORKERS, REQUEST_DELAY_SECONDS
-from scraper.core.http_client import fetch
+from scraper.core.http_client import create_client, fetch
 from scraper.core.site import SiteAdapter
 from scraper.storage.huggingface import (
     add_index_operation,
@@ -79,7 +77,7 @@ def scrape_page(site: SiteAdapter, page_number: int, last_page: int, first_html:
     if first_html is not None:
         html_text = first_html
     else:
-        with httpx.Client(follow_redirects=True) as client:
+        with create_client() as client:
             html_text = fetch(client, url)
 
     listings = site.parse_listings(html_text, url)
@@ -114,7 +112,7 @@ def run_site_pipeline(site: SiteAdapter) -> None:
     upload_operations = []
     batch_number = 1
 
-    with httpx.Client(follow_redirects=True) as client:
+    with create_client() as client:
         # Fetch page 1 first because it also tells us how many pages exist.
         print(f"Scraping start page for {site.name}: {site.start_url}")
         first_html = fetch(client, site.start_url)

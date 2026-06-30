@@ -5,11 +5,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
-import httpx
+from curl_cffi.requests.exceptions import RequestException
 from selectolax.parser import HTMLParser
 
 from scraper.core.config import DETAIL_REQUEST_DELAY_SECONDS, DETAIL_WORKERS, MAX_DETAIL_PAGES
-from scraper.core.http_client import fetch_response
+from scraper.core.http_client import create_client, fetch_response
 from scraper.sites.imobiliare.parser import clean_text
 
 
@@ -218,7 +218,7 @@ def extract_detail_metadata(tree: HTMLParser) -> dict:
     return metadata
 
 
-def resolve_listing_url(client: httpx.Client, listing_url: str) -> tuple[str, str | None, dict]:
+def resolve_listing_url(client, listing_url: str) -> tuple[str, str | None, dict]:
     """Fetch a detail page, resolve its canonical URL, and extract metadata."""
     try:
         response = fetch_response(client, listing_url)
@@ -233,13 +233,14 @@ def resolve_listing_url(client: httpx.Client, listing_url: str) -> tuple[str, st
                 return urljoin(listing_url, href), None, detail_metadata
 
         return str(response.url), None, detail_metadata
-    except httpx.HTTPStatusError as error:
-        status_code = error.response.status_code
-        message = f"HTTP {status_code}: {error.response.reason_phrase}"
-        print(f"Warning: detail URL failed ({message}): {listing_url}")
-        return listing_url, message, {}
-    except httpx.HTTPError as error:
-        message = f"{type(error).__name__}: {error}"
+    except RequestException as error:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+        reason = getattr(response, "reason", None)
+        if status_code is not None:
+            message = f"HTTP {status_code}: {reason or 'request failed'}"
+        else:
+            message = f"{type(error).__name__}: {error}"
         print(f"Warning: detail URL failed ({message}): {listing_url}")
         return listing_url, message, {}
 
@@ -257,7 +258,7 @@ def resolve_listing_detail_chunk(tasks: list[tuple[int, str]]) -> list[tuple[int
     results = []
 
     # Reuse one HTTP client per worker chunk to keep connections warm.
-    with httpx.Client(follow_redirects=True) as client:
+    with create_client() as client:
         for index, listing_url in tasks:
             if DETAIL_REQUEST_DELAY_SECONDS > 0:
                 time.sleep(DETAIL_REQUEST_DELAY_SECONDS)

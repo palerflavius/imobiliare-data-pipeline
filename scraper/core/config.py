@@ -20,8 +20,15 @@ DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "4"))
 PAGE_WORKERS = int(os.getenv("PAGE_WORKERS", "4"))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; imobiliare-data-pipeline/1.0; educational project)"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
 }
+
+BROWSER_IMPERSONATE = os.getenv("BROWSER_IMPERSONATE", "chrome")
+HTTP_PROXY = os.getenv("SCRAPER_HTTP_PROXY", "")
 
 
 def safe_path_part(value: str) -> str:

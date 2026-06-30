@@ -226,10 +226,41 @@ def retry_delay_seconds(error: Exception) -> int:
     return 300
 
 
-def upload_operations_to_hugging_face(operations: list) -> None:
-    """Upload all staged parquet files in a single Hugging Face commit."""
-    from huggingface_hub import HfApi
+def operation_chunks(operations: list, chunk_size: int) -> list[list]:
+    """Split staged files into smaller commits to reduce Hugging Face preupload pressure."""
+    if chunk_size <= 0:
+        return [operations]
+    return [operations[index : index + chunk_size] for index in range(0, len(operations), chunk_size)]
+
+
+def create_commit_with_retries(api, hf_repo_id: str, operations: list, commit_message: str) -> None:
+    """Create one Hugging Face commit with explicit retry handling for 429 responses."""
     from huggingface_hub.errors import HfHubHTTPError
+
+    max_retries = int(os.getenv("HF_COMMIT_RETRIES", "3"))
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            api.create_commit(
+                repo_id=hf_repo_id,
+                repo_type="dataset",
+                operations=operations,
+                commit_message=commit_message,
+            )
+            return
+        except HfHubHTTPError as error:
+            status_code = getattr(getattr(error, "response", None), "status_code", None)
+            if status_code != 429 or attempt == max_retries:
+                raise
+
+            delay = retry_delay_seconds(error)
+            print(f"Hugging Face rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}.")
+            time.sleep(delay)
+
+
+def upload_operations_to_hugging_face(operations: list) -> None:
+    """Upload staged parquet files to Hugging Face in rate-limit-friendly commits."""
+    from huggingface_hub import HfApi
 
     hf_token, hf_repo_id = hf_config()
 
@@ -242,24 +273,17 @@ def upload_operations_to_hugging_face(operations: list) -> None:
         return
 
     api = HfApi(token=hf_token)
-    max_retries = int(os.getenv("HF_COMMIT_RETRIES", "3"))
+    chunk_size = int(os.getenv("HF_UPLOAD_OPERATION_CHUNK_SIZE", "12"))
+    chunk_delay = float(os.getenv("HF_UPLOAD_CHUNK_DELAY_SECONDS", "20"))
+    chunks = operation_chunks(operations, chunk_size)
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            api.create_commit(
-                repo_id=hf_repo_id,
-                repo_type="dataset",
-                operations=operations,
-                commit_message=f"Upload scraper batch for {PARTITION_PATH}",
-            )
-            break
-        except HfHubHTTPError as error:
-            status_code = getattr(getattr(error, "response", None), "status_code", None)
-            if status_code != 429 or attempt == max_retries:
-                raise
+    for index, chunk in enumerate(chunks, start=1):
+        commit_message = f"Upload scraper batch for {PARTITION_PATH} ({index}/{len(chunks)})"
+        create_commit_with_retries(api, hf_repo_id, chunk, commit_message)
+        print(f"Uploaded Hugging Face commit {index}/{len(chunks)} with {len(chunk)} files.")
 
-            delay = retry_delay_seconds(error)
-            print(f"Hugging Face rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}.")
-            time.sleep(delay)
+        if index < len(chunks) and chunk_delay > 0:
+            print(f"Waiting {chunk_delay} seconds before next Hugging Face commit chunk.")
+            time.sleep(chunk_delay)
 
-    print(f"Uploaded {len(operations)} files to Hugging Face in one commit.")
+    print(f"Uploaded {len(operations)} files to Hugging Face in {len(chunks)} commit(s).")

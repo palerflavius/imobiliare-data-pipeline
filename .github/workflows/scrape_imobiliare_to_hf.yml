@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
 
     steps:
@@ -46,6 +46,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          SCRAPER_HTTP_PROXY: ${{ secrets.SCRAPER_HTTP_PROXY }}
+          BROWSER_IMPERSONATE: "chrome"
           SITE_NAME: ${{ matrix.target.site_name }}
           COUNTY_SLUG: ${{ matrix.target.county_slug }}
           CITY_SLUG: ${{ matrix.target.city_slug }}
@@ -58,6 +60,8 @@ jobs:
           DETAIL_WORKERS: "8"
           DETAIL_REQUEST_DELAY_SECONDS: "0.1"
           REQUEST_DELAY_SECONDS: "0.5"
-          HF_COMMIT_RETRIES: "3"
+          HF_UPLOAD_OPERATION_CHUNK_SIZE: "12"
+          HF_UPLOAD_CHUNK_DELAY_SECONDS: "20"
+          HF_COMMIT_RETRIES: "5"
           HF_COMMIT_RETRY_FALLBACK_SECONDS: "3600"
         run: python -m scraper.main

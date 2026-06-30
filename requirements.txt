@@ -1,4 +1,4 @@
-httpx
+curl_cffi
 selectolax
 pandas
 pyarrow
