@@ -8,9 +8,17 @@ BASE_URL = "https://www.imobiliare.ro"
 
 def offer_property_path(offer_type: str, property_type: str) -> str:
     """Map normalized scraper dimensions to the URL path used by imobiliare.ro."""
-    if offer_type == "sale" and property_type == "apartments":
-        return "vanzare-apartamente"
-    return f"{offer_type}-{property_type}"
+    paths = {
+        ("sale", "apartments"): "vanzare-apartamente",
+        ("sale", "houses-villas"): "vanzare-case-vile",
+        ("sale", "lands"): "vanzare-terenuri",
+        ("rent", "apartments"): "inchirieri-apartamente",
+        ("rent", "houses-villas"): "inchirieri-case-vile",
+    }
+    try:
+        return paths[(offer_type, property_type)]
+    except KeyError as error:
+        raise ValueError(f"Unsupported search: offer_type={offer_type}, property_type={property_type}") from error
 
 
 def start_url(
@@ -47,22 +55,31 @@ def start_url(
 def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug: str, area_slug: str | None = None) -> None:
     """Append one scraper target to the GitHub Actions matrix payload."""
     site_name = defaults["site_name"]
+    searches = defaults.get("searches")
+    if not searches:
+        searches = [{"offer_type": defaults["offer_type"], "property_type": defaults["property_type"]}]
+
     targets.append(
         {
             "site_name": site_name,
             "county_slug": county_slug,
             "city_slug": city_slug,
             "area_slug": area_slug or "",
-            "offer_type": defaults["offer_type"],
-            "property_type": defaults["property_type"],
-            "start_url": start_url(
-                site_name,
-                county_slug,
-                city_slug,
-                area_slug,
-                defaults["offer_type"],
-                defaults["property_type"],
-            ),
+            "searches": [
+                {
+                    "offer_type": search["offer_type"],
+                    "property_type": search["property_type"],
+                    "start_url": start_url(
+                        site_name,
+                        county_slug,
+                        city_slug,
+                        area_slug,
+                        search["offer_type"],
+                        search["property_type"],
+                    ),
+                }
+                for search in searches
+            ],
         }
     )
 

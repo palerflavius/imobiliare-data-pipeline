@@ -9,9 +9,19 @@ BASE_URL = "https://www.imobiliare.ro"
 
 def offer_property_path() -> str:
     """Map configured offer/property values to the imobiliare.ro URL path."""
-    if config.OFFER_TYPE == "sale" and config.PROPERTY_TYPE == "apartments":
-        return "vanzare-apartamente"
-    return f"{safe_path_part(config.OFFER_TYPE)}-{safe_path_part(config.PROPERTY_TYPE)}"
+    paths = {
+        ("sale", "apartments"): "vanzare-apartamente",
+        ("sale", "houses-villas"): "vanzare-case-vile",
+        ("sale", "lands"): "vanzare-terenuri",
+        ("rent", "apartments"): "inchirieri-apartamente",
+        ("rent", "houses-villas"): "inchirieri-case-vile",
+    }
+    try:
+        return paths[(config.OFFER_TYPE, config.PROPERTY_TYPE)]
+    except KeyError as error:
+        raise ValueError(
+            f"Unsupported search: offer_type={config.OFFER_TYPE}, property_type={config.PROPERTY_TYPE}"
+        ) from error
 
 
 def default_start_url() -> str:

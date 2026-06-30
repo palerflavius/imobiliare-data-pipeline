@@ -1,8 +1,28 @@
 {
   "defaults": {
     "site_name": "imobiliare.ro",
-    "offer_type": "sale",
-    "property_type": "apartments"
+    "searches": [
+      {
+        "offer_type": "sale",
+        "property_type": "apartments"
+      },
+      {
+        "offer_type": "sale",
+        "property_type": "houses-villas"
+      },
+      {
+        "offer_type": "sale",
+        "property_type": "lands"
+      },
+      {
+        "offer_type": "rent",
+        "property_type": "apartments"
+      },
+      {
+        "offer_type": "rent",
+        "property_type": "houses-villas"
+      }
+    ]
   },
   "counties": [
     {

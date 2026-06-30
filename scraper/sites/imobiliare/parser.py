@@ -103,6 +103,14 @@ def is_listing_title(line: str) -> bool:
     bad_keywords = [
         "apartamente de vanzare",
         "apartamente de v\u00e2nzare",
+        "apartamente de inchiriat",
+        "apartamente de \u00eenchiriat",
+        "case si vile de vanzare",
+        "case \u0219i vile de v\u00e2nzare",
+        "case si vile de inchiriat",
+        "case \u0219i vile de \u00eenchiriat",
+        "terenuri de vanzare",
+        "terenuri de v\u00e2nzare",
         "anunturi disponibile",
         "anun\u021buri disponibile",
         "reseteaza filtrele",
@@ -136,6 +144,13 @@ def is_listing_title(line: str) -> bool:
         "residence",
         "bloc",
         "zona",
+        "casa",
+        "cas\u0103",
+        "vila",
+        "vil\u0103",
+        "teren",
+        "parcela",
+        "parcel\u0103",
     ]
 
     return any(word in line.lower() for word in good_keywords)

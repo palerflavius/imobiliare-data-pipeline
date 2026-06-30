@@ -208,6 +208,10 @@ def property_type_from_slug(slug: str) -> str | None:
     """Infer normalized property type from the listing slug."""
     if slug.startswith(("apartament-", "penthouse-", "garsoniera-", "studio-")):
         return "apartments"
+    if slug.startswith(("casa-", "vila-", "duplex-", "triplex-")):
+        return "houses-villas"
+    if slug.startswith(("teren-", "parcela-")):
+        return "lands"
     return None
 
 

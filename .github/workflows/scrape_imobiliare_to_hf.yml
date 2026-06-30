@@ -25,6 +25,7 @@ jobs:
           echo "$matrix"
 
   scrape:
+    name: Scrape ${{ matrix.target.county_slug }} / ${{ matrix.target.city_slug }} / ${{ matrix.target.area_slug || 'all' }}
     needs: build-matrix
     runs-on: ubuntu-latest
     strategy:
@@ -52,9 +53,7 @@ jobs:
           COUNTY_SLUG: ${{ matrix.target.county_slug }}
           CITY_SLUG: ${{ matrix.target.city_slug }}
           AREA_SLUG: ${{ matrix.target.area_slug }}
-          OFFER_TYPE: ${{ matrix.target.offer_type }}
-          PROPERTY_TYPE: ${{ matrix.target.property_type }}
-          START_URL: ${{ matrix.target.start_url }}
+          SEARCHES_JSON: ${{ toJSON(matrix.target.searches) }}
           BATCH_SIZE: "2000"
           PAGE_WORKERS: "8"
           DETAIL_WORKERS: "8"
@@ -64,4 +63,4 @@ jobs:
           HF_UPLOAD_CHUNK_DELAY_SECONDS: "20"
           HF_COMMIT_RETRIES: "5"
           HF_COMMIT_RETRY_FALLBACK_SECONDS: "3600"
-        run: python -m scraper.main
+        run: python -m scraper.run_target
