@@ -53,11 +53,28 @@ def start_url(
 
 
 def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug: str, area_slug: str | None = None) -> None:
-    """Append one scraper target to the GitHub Actions matrix payload."""
+    """Append one geographic scraper target to the GitHub Actions matrix payload."""
     site_name = defaults["site_name"]
     searches = defaults.get("searches")
     if not searches:
         searches = [{"offer_type": defaults["offer_type"], "property_type": defaults["property_type"]}]
+
+    searches_by_offer = {}
+    for search in searches:
+        searches_by_offer.setdefault(search["offer_type"], []).append(
+            {
+                "offer_type": search["offer_type"],
+                "property_type": search["property_type"],
+                "start_url": start_url(
+                    site_name,
+                    county_slug,
+                    city_slug,
+                    area_slug,
+                    search["offer_type"],
+                    search["property_type"],
+                ),
+            }
+        )
 
     targets.append(
         {
@@ -65,21 +82,8 @@ def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug:
             "county_slug": county_slug,
             "city_slug": city_slug,
             "area_slug": area_slug or "",
-            "searches": [
-                {
-                    "offer_type": search["offer_type"],
-                    "property_type": search["property_type"],
-                    "start_url": start_url(
-                        site_name,
-                        county_slug,
-                        city_slug,
-                        area_slug,
-                        search["offer_type"],
-                        search["property_type"],
-                    ),
-                }
-                for search in searches
-            ],
+            "sale_searches": searches_by_offer.get("sale", []),
+            "rent_searches": searches_by_offer.get("rent", []),
         }
     )
 

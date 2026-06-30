@@ -32,6 +32,24 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+      SCRAPER_HTTP_PROXY: ${{ secrets.SCRAPER_HTTP_PROXY }}
+      BROWSER_IMPERSONATE: "chrome"
+      SITE_NAME: ${{ matrix.target.site_name }}
+      COUNTY_SLUG: ${{ matrix.target.county_slug }}
+      CITY_SLUG: ${{ matrix.target.city_slug }}
+      AREA_SLUG: ${{ matrix.target.area_slug }}
+      BATCH_SIZE: "2000"
+      PAGE_WORKERS: "8"
+      DETAIL_WORKERS: "8"
+      DETAIL_REQUEST_DELAY_SECONDS: "0.1"
+      REQUEST_DELAY_SECONDS: "0.5"
+      HF_UPLOAD_OPERATION_CHUNK_SIZE: "12"
+      HF_UPLOAD_CHUNK_DELAY_SECONDS: "20"
+      HF_COMMIT_RETRIES: "5"
+      HF_COMMIT_RETRY_FALLBACK_SECONDS: "3600"
 
     steps:
       - uses: actions/checkout@v6
@@ -43,24 +61,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scraper and upload to Hugging Face
+      - id: sale
+        name: Run sale searches
+        continue-on-error: true
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
-          SCRAPER_HTTP_PROXY: ${{ secrets.SCRAPER_HTTP_PROXY }}
-          BROWSER_IMPERSONATE: "chrome"
-          SITE_NAME: ${{ matrix.target.site_name }}
-          COUNTY_SLUG: ${{ matrix.target.county_slug }}
-          CITY_SLUG: ${{ matrix.target.city_slug }}
-          AREA_SLUG: ${{ matrix.target.area_slug }}
-          SEARCHES_JSON: ${{ toJSON(matrix.target.searches) }}
-          BATCH_SIZE: "2000"
-          PAGE_WORKERS: "8"
-          DETAIL_WORKERS: "8"
-          DETAIL_REQUEST_DELAY_SECONDS: "0.1"
-          REQUEST_DELAY_SECONDS: "0.5"
-          HF_UPLOAD_OPERATION_CHUNK_SIZE: "12"
-          HF_UPLOAD_CHUNK_DELAY_SECONDS: "20"
-          HF_COMMIT_RETRIES: "5"
-          HF_COMMIT_RETRY_FALLBACK_SECONDS: "3600"
+          SEARCHES_JSON: ${{ toJSON(matrix.target.sale_searches) }}
         run: python -m scraper.run_target
+
+      - id: rent
+        name: Run rent searches
+        if: always()
+        continue-on-error: true
+        env:
+          SEARCHES_JSON: ${{ toJSON(matrix.target.rent_searches) }}
+        run: python -m scraper.run_target
+
+      - name: Check scraper task results
+        if: always()
+        run: |
+          if [ "${{ steps.sale.outcome }}" != "success" ] || [ "${{ steps.rent.outcome }}" != "success" ]; then
+            echo "Sale outcome: ${{ steps.sale.outcome }}"
+            echo "Rent outcome: ${{ steps.rent.outcome }}"
+            exit 1
+          fi

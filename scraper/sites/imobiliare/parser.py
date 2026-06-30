@@ -32,7 +32,7 @@ def normalize_number(value: str | None) -> float | None:
 def extract_price_eur(text: str) -> float | None:
     """Extract the EUR price from a listing card text block."""
     match = re.search(
-        r"(\d{2,3}(?:[.\s]\d{3})+|\d{4,})\s*(?:EUR|euro|\u20ac|\u00e2\u201a\u00ac)",
+        r"(\d+(?:[.\s]\d{3})*)\s*(?:EUR|euro|\u20ac|\u00e2\u201a\u00ac)",
         text,
         re.IGNORECASE,
     )
