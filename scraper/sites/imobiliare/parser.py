@@ -29,8 +29,9 @@ def normalize_number(value: str | None) -> float | None:
 
 def extract_price_eur(text: str) -> float | None:
     """Extract the EUR price from a listing card text block."""
+    text = text.replace("\u20ac", "EUR").replace("\u00e2\u201a\u00ac", "EUR")
     match = re.search(
-        r"(\d+(?:[.\s]\d{3})*)\s*(?:EUR|euro|\u20ac|\u00e2\u201a\u00ac)",
+        r"(\d+(?:[. \u00a0]\d{3})*)\s*(?:EUR|euro)",
         text,
         re.IGNORECASE,
     )
@@ -70,7 +71,7 @@ def extract_floor(text: str) -> str | None:
 def looks_like_location(line: str) -> bool:
     """Return true when a card line looks like a location line."""
     line = clean_text(line) or ""
-    if "," not in line:
+    if "," not in line or len(line) > 90:
         return False
     bad_words = ["EUR", "euro", "\u20ac", "\u00e2\u201a\u00ac", "camere", "mp", "Etaj", "Loading", "Trimite mesaj"]
     return not any(word.lower() in line.lower() for word in bad_words)
@@ -225,7 +226,7 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
     tree = HTMLParser(html_text)
     listings = []
 
-    for anchor in tree.css('a[data-cy="listing-information-link"], a[id^="listing-link-"]'):
+    for anchor in tree.css('a[data-cy="listing-information-link"], a[id^="listing-link-"], a[href*="/oferta/"]'):
         href = anchor.attributes.get("href")
         if not href or "/oferta/" not in href:
             continue
@@ -235,7 +236,7 @@ def parse_listings(html_text: str, page_url: str) -> list[dict]:
         card = find_card_container(anchor)
         block_lines = node_to_lines(card)
         block_text = "\n".join(block_lines)
-        title = extract_title_from_card(block_lines)
+        title = extract_title_from_card(block_lines) or clean_text(anchor.attributes.get("aria-label"))
 
         if not title:
             continue

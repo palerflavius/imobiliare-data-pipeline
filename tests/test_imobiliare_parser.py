@@ -15,6 +15,10 @@ class ExtractPriceEurTests(unittest.TestCase):
     def test_extracts_sale_price(self) -> None:
         self.assertEqual(extract_price_eur("240.000 EUR"), 240000.0)
 
+    def test_extracts_real_euro_symbol_after_year(self) -> None:
+        text = "FINALIZARE 2026\n135.360 €\nDezvoltator"
+        self.assertEqual(extract_price_eur(text), 135360.0)
+
 
 if __name__ == "__main__":
     unittest.main()
