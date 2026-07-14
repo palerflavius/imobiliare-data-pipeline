@@ -2,8 +2,6 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
-from selectolax.parser import HTMLParser
-
 from scraper.core.config import AREA_SLUG, CITY_SLUG, COUNTY_SLUG, OFFER_TYPE, PROPERTY_TYPE, SITE_NAME
 
 
@@ -222,6 +220,8 @@ def page_url(base_url: str, page_number: int) -> str:
 
 def parse_listings(html_text: str, page_url: str) -> list[dict]:
     """Parse listing cards from one result page into normalized row dictionaries."""
+    from selectolax.parser import HTMLParser
+
     tree = HTMLParser(html_text)
     listings = []
 

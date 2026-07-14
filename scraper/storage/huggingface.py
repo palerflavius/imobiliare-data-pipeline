@@ -21,13 +21,39 @@ def index_path_in_repo(partition_path: str = PARTITION_PATH) -> str:
 
 
 def index_glob_for_current_target() -> str:
-    """Return the Hugging Face glob used to load index state for this target."""
-    if CITY_SLUG != "all":
-        return HF_INDEX_PATH
-
+    """Return the Hugging Face glob used by county-wide targets."""
     parts = PARTITION_PATH.split("/")
     glob_parts = ["city=*" if part == "city=all" else part for part in parts]
     return f"raw/{'/'.join(glob_parts)}/index/listing_price_index.parquet"
+
+
+def read_index_frames(fs, hf_repo_id: str):
+    """Read exact index paths directly and use glob only for city=all targets."""
+    import pandas as pd
+
+    if CITY_SLUG != "all":
+        index_path = f"datasets/{hf_repo_id}/{HF_INDEX_PATH}"
+        with fs.open(index_path, "rb") as index_file:
+            return [pd.read_parquet(index_file)]
+
+    index_glob = index_glob_for_current_target()
+    index_paths = sorted(fs.glob(f"datasets/{hf_repo_id}/{index_glob}"))
+    if not index_paths:
+        raise FileNotFoundError(f"No index files matched {index_glob}")
+
+    frames = []
+    for index_path in index_paths:
+        with fs.open(index_path, "rb") as index_file:
+            frames.append(pd.read_parquet(index_file))
+    return frames
+
+
+def is_missing_index_error(error: Exception) -> bool:
+    """Return true when Hugging Face reports that an index does not exist yet."""
+    if isinstance(error, FileNotFoundError):
+        return True
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == 404
 
 
 def load_existing_index():
@@ -40,22 +66,30 @@ def load_existing_index():
         print("Skipping Hugging Face index load: HF_TOKEN or HF_REPO_ID is not set.")
         return pd.DataFrame()
 
-    try:
-        fs = HfFileSystem(token=hf_token)
-        index_glob = index_glob_for_current_target()
-        index_paths = sorted(fs.glob(f"datasets/{hf_repo_id}/{index_glob}"))
-        if not index_paths:
-            print(f"No existing Hugging Face index files matched {index_glob}.")
-            return pd.DataFrame()
+    fs = HfFileSystem(token=hf_token)
+    max_retries = int(os.getenv("HF_INDEX_LOAD_RETRIES", "3"))
 
-        frames = []
-        for index_path in index_paths:
-            with fs.open(index_path, "rb") as index_file:
-                frames.append(pd.read_parquet(index_file))
-        df = pd.concat(frames, ignore_index=True)
-    except Exception as error:
-        print(f"No existing Hugging Face index loaded ({type(error).__name__}: {error}).")
-        return pd.DataFrame()
+    for attempt in range(1, max_retries + 1):
+        try:
+            frames = read_index_frames(fs, hf_repo_id)
+            df = pd.concat(frames, ignore_index=True)
+            break
+        except Exception as error:
+            if is_missing_index_error(error):
+                print(f"No existing Hugging Face index loaded ({error}).")
+                return pd.DataFrame()
+
+            if attempt == max_retries:
+                raise RuntimeError(
+                    f"Failed to load Hugging Face index after {max_retries} attempts."
+                ) from error
+
+            delay = min(10 * attempt, 30)
+            print(
+                f"Hugging Face index load failed ({type(error).__name__}: {error}). "
+                f"Retrying in {delay} seconds ({attempt + 1}/{max_retries})."
+            )
+            time.sleep(delay)
 
     print(f"Loaded Hugging Face index rows: {len(df)}")
     return df
