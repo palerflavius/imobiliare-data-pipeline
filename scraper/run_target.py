@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from scraper.core.config import UPSTREAM_BLOCKED_EXIT_CODE
+
 
 def configured_searches() -> list[dict]:
     """Read the searches attached to the current geographic matrix target."""
@@ -41,14 +43,24 @@ def run_search(search: dict) -> int:
 def main() -> None:
     """Run all searches for one geographic target and report combined failures."""
     failures = []
+    blocked = []
 
     for search in configured_searches():
         return_code = run_search(search)
-        if return_code:
+        if return_code == UPSTREAM_BLOCKED_EXIT_CODE:
+            blocked.append(search_label(search))
+        elif return_code:
             failures.append(f"{search_label(search)} (exit {return_code})")
 
     if failures:
         raise SystemExit(f"Searches failed: {', '.join(failures)}")
+
+    if blocked:
+        print(
+            "Searches blocked by upstream and skipped: "
+            f"{', '.join(blocked)}. Configure SCRAPER_HTTP_PROXY to scrape from GitHub Actions.",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

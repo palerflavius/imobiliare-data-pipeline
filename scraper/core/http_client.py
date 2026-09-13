@@ -5,6 +5,10 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from scraper.core.config import BROWSER_IMPERSONATE, HEADERS, HTTP_PROXY
 
 
+class UpstreamBlockedError(RuntimeError):
+    """Raised when the target site blocks the runner before scraping can start."""
+
+
 def create_client() -> requests.Session:
     """Create a persistent browser-impersonating HTTP session."""
     proxies = {"http": HTTP_PROXY, "https": HTTP_PROXY} if HTTP_PROXY else None
@@ -36,7 +40,15 @@ def is_retryable_fetch_error(error: BaseException) -> bool:
 def fetch_response(client: requests.Session, url: str):
     """Fetch a URL with shared headers and retry handling."""
     response = client.get(url, timeout=30, allow_redirects=True)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except RequestException as error:
+        if getattr(response, "status_code", None) == 403:
+            raise UpstreamBlockedError(
+                f"Target site returned HTTP 403 for {url}. "
+                "GitHub-hosted runners may need SCRAPER_HTTP_PROXY configured."
+            ) from error
+        raise
     return response
 
 
