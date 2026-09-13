@@ -18,6 +18,12 @@ class BuildMatrixTests(unittest.TestCase):
             "https://www.storia.ro/ro/rezultate/vanzare/apartament/brasov/brasov",
         )
 
+    def test_builds_storia_cluj_napoca_url(self) -> None:
+        self.assertEqual(
+            start_url("storia.ro", "cluj", "cluj-napoca", None, "sale", "apartments"),
+            "https://www.storia.ro/ro/rezultate/vanzare/apartament/cluj/cluj--napoca",
+        )
+
     def test_builds_storia_bucharest_sector_url(self) -> None:
         self.assertEqual(
             start_url("storia.ro", "bucuresti", "bucuresti", "sector-1", "rent", "houses-villas"),

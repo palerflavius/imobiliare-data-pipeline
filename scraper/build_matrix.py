@@ -42,6 +42,13 @@ def storia_area_slug(area_slug: str) -> str:
     return area_slug
 
 
+def storia_location_slug(slug: str) -> str:
+    """Convert local location slugs to Storia URL slugs."""
+    if slug == "cluj-napoca":
+        return "cluj--napoca"
+    return slug
+
+
 def imobiliare_start_url(base_url: str, path: str, county_slug: str, city_slug: str, area_slug: str | None) -> str:
     """Build an imobiliare.ro result URL."""
     if county_slug == "bucuresti":
@@ -70,9 +77,9 @@ def storia_start_url(base_url: str, path: str, county_slug: str, city_slug: str,
     if city_slug == "all":
         return f"{base_url}/ro/rezultate/{path}/{county_slug}"
 
-    url = f"{base_url}/ro/rezultate/{path}/{county_slug}/{city_slug}"
+    url = f"{base_url}/ro/rezultate/{path}/{county_slug}/{storia_location_slug(city_slug)}"
     if area_slug:
-        url = f"{url}/{area_slug}"
+        url = f"{url}/{storia_location_slug(area_slug)}"
     return url
 
 

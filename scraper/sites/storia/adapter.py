@@ -30,6 +30,13 @@ def storia_area_slug(area_slug: str) -> str:
     return area_slug
 
 
+def storia_location_slug(slug: str) -> str:
+    """Convert local location slugs to Storia URL slugs."""
+    if slug == "cluj-napoca":
+        return "cluj--napoca"
+    return slug
+
+
 def default_start_url() -> str:
     """Build the start URL when the matrix does not provide START_URL."""
     path = offer_property_path()
@@ -43,7 +50,7 @@ def default_start_url() -> str:
     if config.CITY_SLUG and config.CITY_SLUG != "all":
         return (
             f"{BASE_URL}/ro/rezultate/{path}/"
-            f"{safe_path_part(config.COUNTY_SLUG)}/{safe_path_part(config.CITY_SLUG)}"
+            f"{safe_path_part(config.COUNTY_SLUG)}/{storia_location_slug(safe_path_part(config.CITY_SLUG))}"
         )
 
     return f"{BASE_URL}/ro/rezultate/{path}/{safe_path_part(config.COUNTY_SLUG)}"

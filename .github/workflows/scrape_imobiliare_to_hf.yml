@@ -6,7 +6,27 @@ on:
     - cron: "0 6 * * *"
 
 jobs:
+  check-proxy:
+    runs-on: ubuntu-latest
+    outputs:
+      has_proxy: ${{ steps.proxy.outputs.has_proxy }}
+    steps:
+      - id: proxy
+        name: Check proxy configuration
+        env:
+          SCRAPER_HTTP_PROXY: ${{ secrets.SCRAPER_HTTP_PROXY }}
+        run: |
+          if [ -n "$SCRAPER_HTTP_PROXY" ]; then
+            echo "has_proxy=true" >> "$GITHUB_OUTPUT"
+            echo "SCRAPER_HTTP_PROXY is configured; scraper jobs will run."
+          else
+            echo "has_proxy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping imobiliare.ro scraping because SCRAPER_HTTP_PROXY is not configured. imobiliare.ro blocks GitHub-hosted runners with HTTP 403."
+          fi
+
   build-matrix:
+    needs: check-proxy
+    if: needs.check-proxy.outputs.has_proxy == 'true'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
