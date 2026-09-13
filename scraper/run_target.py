@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-from scraper.core.config import UPSTREAM_BLOCKED_EXIT_CODE
+from scraper.core.config import FAIL_ON_UPSTREAM_BLOCKED, UPSTREAM_BLOCKED_EXIT_CODE
 
 
 def configured_searches() -> list[dict]:
@@ -56,11 +56,13 @@ def main() -> None:
         raise SystemExit(f"Searches failed: {', '.join(failures)}")
 
     if blocked:
-        print(
+        message = (
             "Searches blocked by upstream and skipped: "
-            f"{', '.join(blocked)}. Configure SCRAPER_HTTP_PROXY to scrape from GitHub Actions.",
-            flush=True,
+            f"{', '.join(blocked)}. Configure SCRAPER_HTTP_PROXY to scrape from GitHub Actions."
         )
+        if FAIL_ON_UPSTREAM_BLOCKED:
+            raise SystemExit(message)
+        print(message, flush=True)
 
 
 if __name__ == "__main__":

@@ -102,16 +102,6 @@ def run_site_pipeline(site: SiteAdapter) -> None:
     """Run one full scrape target from listing pages through Hugging Face upload."""
     import pandas as pd
 
-    # The index is the compact state used for change detection and deletion detection.
-    index_df = load_existing_index()
-    existing_event_keys, latest_prices = index_lookup(index_df)
-    new_or_changed_listings = []
-    seen_event_keys = set(existing_event_keys)
-    seen_listing_urls_this_run = set()
-    seen_listing_ids_this_run = set()
-    upload_operations = []
-    batch_number = 1
-
     with create_client() as client:
         # Fetch page 1 first because it also tells us how many pages exist.
         print(f"Scraping start page for {site.name}: {site.start_url}")
@@ -122,6 +112,16 @@ def run_site_pipeline(site: SiteAdapter) -> None:
 
         print(f"Pages to scrape: {last_page}")
         all_page_listings = scrape_page(site, 1, last_page, first_html=first_html)
+
+    # Load the index only after upstream access succeeds; blocked runners should fail fast.
+    index_df = load_existing_index()
+    existing_event_keys, latest_prices = index_lookup(index_df)
+    new_or_changed_listings = []
+    seen_event_keys = set(existing_event_keys)
+    seen_listing_urls_this_run = set()
+    seen_listing_ids_this_run = set()
+    upload_operations = []
+    batch_number = 1
 
     page_numbers = list(range(2, last_page + 1))
     if page_numbers:

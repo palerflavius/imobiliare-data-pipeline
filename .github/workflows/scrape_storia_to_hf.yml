@@ -1,9 +1,9 @@
-name: Scrape imobiliare.ro to Hugging Face
+name: Scrape storia.ro to Hugging Face
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "30 6 * * *"
 
 jobs:
   build-matrix:
@@ -20,7 +20,7 @@ jobs:
       - id: targets
         name: Build target matrix
         run: |
-          matrix="$(python scraper/build_matrix.py scraper/targets/imobiliare.json)"
+          matrix="$(python scraper/build_matrix.py scraper/targets/storia.json)"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix"
 

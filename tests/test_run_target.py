@@ -23,6 +23,13 @@ class RunTargetTests(unittest.TestCase):
             with patch.object(run_target, "run_search", return_value=UPSTREAM_BLOCKED_EXIT_CODE):
                 run_target.main()
 
+    def test_upstream_blocked_search_exits_in_strict_mode(self) -> None:
+        with patch.dict(os.environ, {"SEARCHES_JSON": SEARCHES_JSON}):
+            with patch.object(run_target, "FAIL_ON_UPSTREAM_BLOCKED", True):
+                with patch.object(run_target, "run_search", return_value=UPSTREAM_BLOCKED_EXIT_CODE):
+                    with self.assertRaises(SystemExit):
+                        run_target.main()
+
     def test_non_blocked_search_failure_exits(self) -> None:
         with patch.dict(os.environ, {"SEARCHES_JSON": SEARCHES_JSON}):
             with patch.object(run_target, "run_search", return_value=1):

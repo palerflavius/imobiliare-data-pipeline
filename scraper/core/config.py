@@ -30,6 +30,7 @@ HEADERS = {
 BROWSER_IMPERSONATE = os.getenv("BROWSER_IMPERSONATE", "chrome")
 HTTP_PROXY = os.getenv("SCRAPER_HTTP_PROXY", "")
 UPSTREAM_BLOCKED_EXIT_CODE = 78
+FAIL_ON_UPSTREAM_BLOCKED = os.getenv("FAIL_ON_UPSTREAM_BLOCKED", "").strip().lower() in {"1", "true", "yes"}
 
 
 def safe_path_part(value: str) -> str:

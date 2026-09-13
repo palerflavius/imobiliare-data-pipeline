@@ -3,22 +3,77 @@ import sys
 from pathlib import Path
 
 
-BASE_URL = "https://www.imobiliare.ro"
+BASE_URLS = {
+    "imobiliare.ro": "https://www.imobiliare.ro",
+    "storia.ro": "https://www.storia.ro",
+}
 
 
-def offer_property_path(offer_type: str, property_type: str) -> str:
-    """Map normalized scraper dimensions to the URL path used by imobiliare.ro."""
-    paths = {
-        ("sale", "apartments"): "vanzare-apartamente",
-        ("sale", "houses-villas"): "vanzare-case-vile",
-        ("sale", "lands"): "vanzare-terenuri",
-        ("rent", "apartments"): "inchirieri-apartamente",
-        ("rent", "houses-villas"): "inchirieri-case-vile",
+def offer_property_path(site_name: str, offer_type: str, property_type: str) -> str:
+    """Map normalized scraper dimensions to the URL path used by each site."""
+    paths_by_site = {
+        "imobiliare.ro": {
+            ("sale", "apartments"): "vanzare-apartamente",
+            ("sale", "houses-villas"): "vanzare-case-vile",
+            ("sale", "lands"): "vanzare-terenuri",
+            ("rent", "apartments"): "inchirieri-apartamente",
+            ("rent", "houses-villas"): "inchirieri-case-vile",
+        },
+        "storia.ro": {
+            ("sale", "apartments"): "vanzare/apartament",
+            ("sale", "houses-villas"): "vanzare/casa",
+            ("sale", "lands"): "vanzare/teren",
+            ("rent", "apartments"): "inchiriere/apartament",
+            ("rent", "houses-villas"): "inchiriere/casa",
+        },
     }
     try:
-        return paths[(offer_type, property_type)]
+        return paths_by_site[site_name][(offer_type, property_type)]
     except KeyError as error:
-        raise ValueError(f"Unsupported search: offer_type={offer_type}, property_type={property_type}") from error
+        raise ValueError(
+            f"Unsupported search: site_name={site_name}, offer_type={offer_type}, property_type={property_type}"
+        ) from error
+
+
+def storia_area_slug(area_slug: str) -> str:
+    """Convert local area slugs to Storia URL slugs."""
+    if area_slug.startswith("sector-"):
+        return area_slug.replace("sector-", "sectorul-", 1)
+    return area_slug
+
+
+def imobiliare_start_url(base_url: str, path: str, county_slug: str, city_slug: str, area_slug: str | None) -> str:
+    """Build an imobiliare.ro result URL."""
+    if county_slug == "bucuresti":
+        url = f"{base_url}/{path}/bucuresti"
+        if area_slug:
+            url = f"{url}/{area_slug}"
+        return url
+
+    if city_slug == "all":
+        return f"{base_url}/{path}/judetul-{county_slug}"
+
+    url = f"{base_url}/{path}/judetul-{county_slug}/{city_slug}"
+    if area_slug:
+        url = f"{url}/{area_slug}"
+    return url
+
+
+def storia_start_url(base_url: str, path: str, county_slug: str, city_slug: str, area_slug: str | None) -> str:
+    """Build a storia.ro result URL."""
+    if county_slug == "bucuresti":
+        url = f"{base_url}/ro/rezultate/{path}/bucuresti"
+        if area_slug:
+            url = f"{url}/{storia_area_slug(area_slug)}"
+        return url
+
+    if city_slug == "all":
+        return f"{base_url}/ro/rezultate/{path}/{county_slug}"
+
+    url = f"{base_url}/ro/rezultate/{path}/{county_slug}/{city_slug}"
+    if area_slug:
+        url = f"{url}/{area_slug}"
+    return url
 
 
 def start_url(
@@ -30,26 +85,14 @@ def start_url(
     property_type: str,
 ) -> str:
     """Build the search URL for one GitHub Actions matrix target."""
-    if site_name != "imobiliare.ro":
+    if site_name not in BASE_URLS:
         raise ValueError(f"Unsupported site_name: {site_name}")
 
-    path = offer_property_path(offer_type, property_type)
-
-    # Bucharest URLs use the city path directly, not the judetul-* county form.
-    if county_slug == "bucuresti":
-        url = f"{BASE_URL}/{path}/bucuresti"
-        if area_slug:
-            url = f"{url}/{area_slug}"
-        return url
-
-    # city=all means scrape the county page once; rows can still be partitioned later by detected city.
-    if city_slug == "all":
-        return f"{BASE_URL}/{path}/judetul-{county_slug}"
-
-    url = f"{BASE_URL}/{path}/judetul-{county_slug}/{city_slug}"
-    if area_slug:
-        url = f"{url}/{area_slug}"
-    return url
+    base_url = BASE_URLS[site_name]
+    path = offer_property_path(site_name, offer_type, property_type)
+    if site_name == "storia.ro":
+        return storia_start_url(base_url, path, county_slug, city_slug, area_slug)
+    return imobiliare_start_url(base_url, path, county_slug, city_slug, area_slug)
 
 
 def add_target(targets: list[dict], defaults: dict, county_slug: str, city_slug: str, area_slug: str | None = None) -> None:
